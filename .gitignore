@@ -5,6 +5,7 @@ state.json
 state.lock
 shop_catalog.json
 shop_catalog.lock
+data/
 events.jsonl
 *.tmp
 

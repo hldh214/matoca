@@ -21,8 +21,10 @@ def test_mutable_files_are_gitignored() -> None:
         "line_client.toml",
         "shop_catalog.json",
         "shop_catalog.lock",
+        "data/",
         ".env",
         "docs/superpowers/",
+        ".superpowers/",
     } <= set(ignored)
 
 
@@ -70,4 +72,5 @@ def test_runtime_settings_use_explicit_line_and_catalog_paths() -> None:
 
     assert settings.line_client_file == Path("line_client.toml")
     assert settings.shop_cache_file == Path("shop_catalog.json")
+    assert settings.database_file == Path("data/matoca.db")
     assert not hasattr(settings, "config_file")
