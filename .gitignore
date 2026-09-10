@@ -1,7 +1,10 @@
 .env
 config.toml
+line_client.toml
 state.json
 state.lock
+shop_catalog.json
+shop_catalog.lock
 events.jsonl
 *.tmp
 
@@ -14,3 +17,5 @@ coverage.xml
 .coverage
 __pycache__/
 *.py[cod]
+
+docs/superpowers/

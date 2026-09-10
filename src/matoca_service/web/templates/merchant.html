@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ merchant.name }} | Matoca</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/dashboard.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='/merchant.css') }}">
+    <script type="module" src="{{ url_for('static', path='/merchant.js') }}" defer></script>
+  </head>
+  <body data-merchant-key="{{ merchant.key }}">
+    <header class="app-header">
+      <a class="wordmark" href="/">Matoca</a>
+      <a class="back-link" href="/">ブランド選択へ</a>
+    </header>
+    <main class="console-main">
+      <div class="console-title">
+        <div><p>店舗の受付状況</p><h1>{{ merchant.name }}</h1></div>
+        <button class="icon-button" id="refresh-button" type="button" title="最新情報に更新" aria-label="最新情報に更新">↻</button>
+      </div>
+      <section class="queue-band" aria-labelledby="queue-title">
+        <div><p>現在の受付</p><h2 id="queue-title">現在の順番待ち</h2></div>
+        <div id="current-queue" class="queue-content" aria-live="polite">最新情報を取得しています</div>
+      </section>
+      <section class="shop-console" aria-label="店舗一覧">
+        <div class="toolbar">
+          <div class="segmented" role="group" aria-label="店舗の絞り込み">
+            <button type="button" data-filter="available" class="is-active">受付可能</button>
+            <button type="button" data-filter="all">すべての店舗</button>
+          </div>
+          <label class="search-field"><span>店舗検索</span><input id="shop-search" type="search" placeholder="店舗名・地域で検索"></label>
+        </div>
+        <div class="list-header" aria-hidden="true"><span>店舗</span><span>受付状況</span><span>待ち組数</span><span>目安時間</span><span></span></div>
+        <div id="shop-list" class="shop-list"><p class="loading-state">最新情報を取得しています</p></div>
+        <p id="updated-at" class="updated-at"></p>
+      </section>
+    </main>
+    <dialog id="join-dialog" class="queue-dialog">
+      <form method="dialog" id="join-form">
+        <button class="dialog-close" type="button" aria-label="閉じる">×</button>
+        <p class="dialog-kicker">順番待ち</p><h2 id="join-shop-name"></h2>
+        <p id="join-status" class="dialog-status"></p>
+        <div class="counter-row"><span>大人</span><div class="stepper"><button type="button" data-step="adult" data-delta="-1">−</button><output id="adult-count">2</output><button type="button" data-step="adult" data-delta="1">＋</button></div></div>
+        <div class="counter-row"><span>子ども</span><div class="stepper"><button type="button" data-step="child" data-delta="-1">−</button><output id="child-count">0</output><button type="button" data-step="child" data-delta="1">＋</button></div></div>
+        <div id="confirm-items" class="confirm-items"></div>
+        <p id="join-error" class="form-error" role="alert"></p>
+        <button type="submit" class="primary-button">順番待ちを申し込む</button>
+      </form>
+    </dialog>
+    <dialog id="cancel-dialog" class="queue-dialog compact-dialog">
+      <form method="dialog" id="cancel-form">
+        <button class="dialog-close" type="button" aria-label="閉じる">×</button>
+        <p class="dialog-kicker">確認</p><h2>順番待ちを取り消しますか？</h2>
+        <p id="cancel-detail" class="dialog-status"></p>
+        <p id="cancel-error" class="form-error" role="alert"></p>
+        <button type="submit" class="danger-button">順番待ちを取り消す</button>
+      </form>
+    </dialog>
+  </body>
+</html>

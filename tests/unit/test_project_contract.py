@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from matoca_service.config import LineConfig, MerchantRegistry, RuntimeSettings
+
 REPO_ROOT = Path(__file__).parents[2]
 
 
@@ -13,4 +15,48 @@ def test_runtime_templates_never_contain_credentials() -> None:
 def test_mutable_files_are_gitignored() -> None:
     ignored = (REPO_ROOT / ".gitignore").read_text().splitlines()
 
-    assert {"state.json", "state.lock", "config.toml", ".env"} <= set(ignored)
+    assert {
+        "state.json",
+        "state.lock",
+        "line_client.toml",
+        "shop_catalog.json",
+        "shop_catalog.lock",
+        ".env",
+        "docs/superpowers/",
+    } <= set(ignored)
+
+
+def test_builtin_registry_contains_supported_sawayaka_merchant() -> None:
+    registry = MerchantRegistry.load_builtin()
+
+    assert registry.merchants["sawayaka"].name_ja == "炭焼きレストラン さわやか"
+    assert registry.merchants["sawayaka"].liff_id == "2006055787-m6P6OJ38"
+
+
+def test_line_client_profile_is_loaded_separately(tmp_path: Path) -> None:
+    profile = tmp_path / "line_client.toml"
+    profile.write_text(
+        "\n".join(
+            [
+                'host = "legy-jp.line-apps.com"',
+                'application = "synthetic-app"',
+                'locale = "ja_JP"',
+                'protocol_version = "1"',
+                'user_agent = "synthetic-agent"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = LineConfig.from_toml(profile)
+
+    assert config.application == "synthetic-app"
+    assert config.locale == "ja_JP"
+
+
+def test_runtime_settings_use_explicit_line_and_catalog_paths() -> None:
+    settings = RuntimeSettings(_env_file=None)
+
+    assert settings.line_client_file == Path("line_client.toml")
+    assert settings.shop_cache_file == Path("shop_catalog.json")
+    assert not hasattr(settings, "config_file")

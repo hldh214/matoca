@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from matoca_service.config import MerchantConfig
 from matoca_service.matoca.client import MatocaApiError, MatocaClient
+from matoca_service.matoca.models import CreateWaitingRequest
 
 
 @pytest.fixture
@@ -200,3 +201,70 @@ async def test_get_waiting_rejects_non_object_content(merchant: MerchantConfig) 
             match="Matoca waiting response has an invalid content shape",
         ):
             await MatocaClient(merchant, http, "synthetic-liff").get_waiting(125000001)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_all_shops_stops_after_empty_page(merchant: MerchantConfig) -> None:
+    route = respx.get("https://admin.junbanmachi.jp/liff/shops").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "status": "success",
+                    "code": 200,
+                    "content": {"shops": [{"id": 1, "name": "shop one"}]},
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "status": "success",
+                    "code": 200,
+                    "content": {"shops": [{"id": 2, "name": "shop two"}]},
+                },
+            ),
+            httpx.Response(
+                200,
+                json={"status": "success", "code": 200, "content": {"shops": []}},
+            ),
+        ]
+    )
+
+    async with httpx.AsyncClient() as http:
+        shops = await MatocaClient(merchant, http, "synthetic-liff").list_all_shops()
+
+    assert [shop.id for shop in shops] == [1, 2]
+    assert [call.request.url.params["page"] for call in route.calls] == ["1", "2", "3"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_waiting_sends_capture_backed_payload(merchant: MerchantConfig) -> None:
+    route = respx.post("https://admin.junbanmachi.jp/liff/waiting").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "code": 200,
+                "content": {"id": 125000001, "count": 10, "number": 20},
+            },
+        )
+    )
+    request = CreateWaitingRequest(
+        shop_id="3272",
+        adult_count=2,
+        child_count=0,
+        answer1=0,
+        lat=34.0,
+        lng=137.0,
+    )
+
+    async with httpx.AsyncClient() as http:
+        waiting = await MatocaClient(merchant, http, "synthetic-liff").create_waiting(request)
+
+    assert route.calls[0].request.read().decode() == (
+        '{"shop_id":"3272","adult_count":2,"child_count":0,"answer1":0,'
+        '"answer2":null,"lat":34.0,"lng":137.0,"in_advance_information":"","ref":"web"}'
+    )
+    assert waiting.id == 125000001

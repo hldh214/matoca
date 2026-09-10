@@ -3,115 +3,31 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Matoca Queue Console</title>
+    <title>Matoca | ブランドを選択</title>
     <link rel="stylesheet" href="{{ url_for('static', path='/dashboard.css') }}">
   </head>
   <body>
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">QUEUE CONSOLE</p>
-        <h1>Matoca</h1>
-      </div>
-      <div class="merchant">{{ data.merchant }}</div>
+    <header class="app-header">
+      <a class="wordmark" href="/">Matoca</a>
+      <span class="system-indicator"><i></i> 接続中</span>
     </header>
-
-    <main>
-      <section class="status-band" aria-label="Authentication status">
-        <div>
-          <span>LINE native</span>
-          <strong>Connected</strong>
-          <small>Expires {{ data.native_access_expires_at.strftime('%Y-%m-%d %H:%M UTC') }}</small>
-        </div>
-        <div>
-          <span>LIFF</span>
-          <strong>Active</strong>
-          <small>Expires {{ data.liff_expires_at.strftime('%Y-%m-%d %H:%M UTC') }}</small>
-        </div>
-        <div>
-          <span>Current queue</span>
-          <strong>{{ data.waiting|length }}</strong>
-          <small>active reception</small>
-        </div>
-      </section>
-
-      <section class="waiting-section">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">MY RECEPTION</p>
-            <h2>Current queue</h2>
-          </div>
-        </div>
-        {% if data.waiting %}
-          <div class="waiting-list">
-            {% for item in data.waiting %}
-              <article class="waiting-item">
-                <strong>#{{ item.id }}</strong>
-                <span>受付中</span>
-              </article>
-            {% endfor %}
-          </div>
-        {% else %}
-          <p class="empty-state">現在の受付はありません</p>
-        {% endif %}
-      </section>
-
-      <section class="shops-section">
-        <div class="section-heading shops-heading">
-          <div>
-            <p class="eyebrow">SHOPS</p>
-            <h2>店舗一覧</h2>
-          </div>
-          <form method="get" class="search">
-            <input type="hidden" name="merchant" value="{{ merchant_key }}">
-            <label for="keyword">店舗名・地域</label>
-            <div class="search-row">
-              <input id="keyword" name="keyword" value="{{ keyword }}" placeholder="浜松">
-              <button type="submit">検索</button>
+    <main class="selector-main">
+      <div class="page-title">
+        <p>順番待ちサービス</p>
+        <h1>ブランドを選択</h1>
+      </div>
+      <div class="merchant-grid">
+        {% for merchant in merchants %}
+          <a class="merchant-card" href="/merchants/{{ merchant.key }}">
+            <div class="merchant-photo merchant-photo-{{ merchant.key }}" role="img" aria-label="{{ merchant.name }}"></div>
+            <div class="merchant-copy">
+              <span>対応ブランド</span>
+              <h2>{{ merchant.name }}</h2>
+              <strong>店舗を見る <span aria-hidden="true">→</span></strong>
             </div>
-          </form>
-        </div>
-
-        <div class="shop-list">
-          {% for shop in data.shops %}
-            <article class="shop-row">
-              <div class="shop-main">
-                <span class="shop-id">#{{ shop.id }}</span>
-                <div>
-                  <h3>{{ shop.sub_name or shop.name }}</h3>
-                  <p>{{ shop.address or shop.name }}</p>
-                </div>
-              </div>
-              <div class="queue-count">
-                <strong>{{ shop.current_waiting }} 組</strong>
-                <span>
-                  {% if shop.is_holiday %}休業
-                  {% elif shop.is_suspended %}受付停止
-                  {% else %}受付状況{% endif %}
-                </span>
-              </div>
-            </article>
-          {% else %}
-            <p class="empty-state">条件に一致する店舗はありません</p>
-          {% endfor %}
-        </div>
-        <nav class="pagination" aria-label="店舗ページ">
-          {% if data.page > 1 %}
-            <a href="/?merchant={{ merchant_key }}&keyword={{ keyword }}&page={{ data.page - 1 }}">
-              前のページ
-            </a>
-          {% else %}
-            <span></span>
-          {% endif %}
-          <span>Page {{ data.page }}</span>
-          {% if data.shops %}
-            <a href="/?merchant={{ merchant_key }}&keyword={{ keyword }}&page={{ data.page + 1 }}">
-              次のページ
-            </a>
-          {% else %}
-            <span></span>
-          {% endif %}
-        </nav>
-      </section>
+          </a>
+        {% endfor %}
+      </div>
     </main>
   </body>
 </html>

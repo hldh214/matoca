@@ -9,11 +9,49 @@ import pytest
 import respx
 
 from matoca_service.line.models import LiffToken
-from matoca_service.service import DashboardData, MatocaService
+from matoca_service.matoca.models import Shop, ShopForms, Waiting
+from matoca_service.service import (
+    DashboardData,
+    MatocaService,
+    QueueSubmission,
+    QueueUnavailableError,
+    validate_queue_submission,
+)
 from matoca_service.state.models import AppState, LiffTokenState, LineState
 from matoca_service.state.store import JsonStateStore
 
 type JwtFactory = Callable[[dict[str, Any]], str]
+
+
+def test_queue_submission_requires_currently_issuable_shop() -> None:
+    shop = Shop(
+        id=3272,
+        name="synthetic merchant",
+        lat=34.0,
+        lng=137.0,
+        is_open=True,
+        is_issuable=False,
+    )
+    submission = QueueSubmission(shop_id=3272, adult_count=2, child_count=0)
+
+    with pytest.raises(QueueUnavailableError, match="受付状況が変更されました"):
+        validate_queue_submission(shop, submission, [])
+
+
+def test_queue_submission_rejects_second_active_queue() -> None:
+    shop = Shop(
+        id=3272,
+        name="synthetic merchant",
+        lat=34.0,
+        lng=137.0,
+        is_open=True,
+        is_issuable=True,
+        forms=ShopForms(min_adult=1, max_adult=20, min_child=0, max_child=0),
+    )
+    submission = QueueSubmission(shop_id=3272, adult_count=2, child_count=0)
+
+    with pytest.raises(QueueUnavailableError, match="すでに受付中"):
+        validate_queue_submission(shop, submission, [Waiting(id=125000001)])
 
 
 class SerializedTestService(MatocaService):
@@ -61,23 +99,15 @@ async def test_dashboard_reissues_liff_once_after_matoca_unauthorized(
     jwt_factory: JwtFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config_path = tmp_path / "config.toml"
+    config_path = tmp_path / "line_client.toml"
     config_path.write_text(
         """
-[line]
 host = "legy-jp.line-apps.com"
 application = "ANDROIDSECONDARY\\t26.11.0\\tAndroid OS\\t14"
 locale = "en_US"
 protocol_version = "1"
 user_agent = "Line/26.11.0"
 
-[merchants.sawayaka]
-name = "Sawayaka"
-liff_id = "2006055787-m6P6OJ38"
-api_base_url = "https://admin.junbanmachi.jp"
-origin = "https://exclusive-mini.junbanmachi.jp"
-entry_url = "https://exclusive-mini.junbanmachi.jp/sawayaka/"
-line_entry_url = "line://app/2006055787-m6P6OJ38"
 """.strip(),
         encoding="utf-8",
     )
@@ -168,23 +198,15 @@ async def test_shop_detail_reissues_liff_once_after_unauthorized(
     jwt_factory: JwtFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config_path = tmp_path / "config.toml"
+    config_path = tmp_path / "line_client.toml"
     config_path.write_text(
         """
-[line]
 host = "legy-jp.line-apps.com"
 application = "ANDROIDSECONDARY\\t26.11.0\\tAndroid OS\\t14"
 locale = "en_US"
 protocol_version = "1"
 user_agent = "Line/26.11.0"
 
-[merchants.sawayaka]
-name = "Sawayaka"
-liff_id = "2006055787-m6P6OJ38"
-api_base_url = "https://admin.junbanmachi.jp"
-origin = "https://exclusive-mini.junbanmachi.jp"
-entry_url = "https://exclusive-mini.junbanmachi.jp/sawayaka/"
-line_entry_url = "line://app/2006055787-m6P6OJ38"
 """.strip(),
         encoding="utf-8",
     )

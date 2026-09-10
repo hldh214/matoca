@@ -3,7 +3,7 @@ from typing import Any
 import httpx
 
 from matoca_service.config import MerchantConfig
-from matoca_service.matoca.models import Shop, Waiting
+from matoca_service.matoca.models import CreateWaitingRequest, Shop, Waiting
 
 
 class MatocaApiError(RuntimeError):
@@ -11,6 +11,8 @@ class MatocaApiError(RuntimeError):
 
 
 class MatocaClient:
+    MAX_SHOP_PAGES = 20
+
     def __init__(
         self,
         merchant: MerchantConfig,
@@ -91,6 +93,15 @@ class MatocaClient:
             raise MatocaApiError("Matoca waiting response has an invalid content shape")
         return [Waiting.model_validate(waiting) for waiting in content]
 
+    async def list_all_shops(self) -> list[Shop]:
+        shops: list[Shop] = []
+        for page in range(1, self.MAX_SHOP_PAGES + 1):
+            page_shops = await self.list_shops(page=page)
+            if not page_shops:
+                break
+            shops.extend(page_shops)
+        return shops
+
     async def get_shop(self, shop_id: int) -> Shop:
         response = await self._http.get(
             f"{self._base_url}/liff/shops/{shop_id}",
@@ -112,3 +123,22 @@ class MatocaClient:
         if not isinstance(content, dict):
             raise MatocaApiError("Matoca waiting response has an invalid content shape")
         return Waiting.model_validate(content)
+
+    async def create_waiting(self, request: CreateWaitingRequest) -> Waiting:
+        response = await self._http.post(
+            f"{self._base_url}/liff/waiting",
+            headers=self._headers,
+            json=request.model_dump(mode="json"),
+        )
+        payload = await self._json(response)
+        content = payload.get("content")
+        if not isinstance(content, dict):
+            raise MatocaApiError("Matoca create waiting response has an invalid content shape")
+        return Waiting.model_validate(content)
+
+    async def cancel_waiting(self, waiting_id: int) -> None:
+        response = await self._http.delete(
+            f"{self._base_url}/liff/waiting/{waiting_id}",
+            headers=self._headers,
+        )
+        await self._json(response)

@@ -7,11 +7,29 @@ import httpx
 import pytest
 
 from matoca_service.matoca.models import Shop, Waiting
-from matoca_service.service import DashboardData
+from matoca_service.service import DashboardData, MerchantSnapshot, MerchantSummary
 from matoca_service.web.app import create_app
 
 
 class FakeDashboardService:
+    def list_merchants(self) -> list[MerchantSummary]:
+        return [MerchantSummary(key="sawayaka", name="炭焼きレストラン さわやか")]
+
+    async def merchant_snapshot(
+        self,
+        merchant_key: str,
+        *,
+        force_catalog: bool = False,
+    ) -> MerchantSnapshot:
+        assert merchant_key == "sawayaka"
+        del force_catalog
+        return MerchantSnapshot(
+            merchant=MerchantSummary(key="sawayaka", name="炭焼きレストラン さわやか"),
+            refreshed_at=datetime(2026, 9, 10, 12, tzinfo=UTC),
+            shops=[],
+            waiting=[],
+        )
+
     async def dashboard(
         self,
         merchant_key: str,
@@ -71,24 +89,74 @@ def test_web_module_import_does_not_require_runtime_files(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_dashboard_page_renders_live_business_data_without_tokens() -> None:
+async def test_home_page_renders_japanese_merchant_selector_without_tokens() -> None:
     app = create_app(FakeDashboardService())
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",
     ) as client:
-        response = await client.get(
-            "/",
-            params={"merchant": "sawayaka", "keyword": "浜松", "page": 2},
-        )
+        response = await client.get("/")
 
     assert response.status_code == 200
-    assert "イオンモール浜松市野店" in response.text
-    assert "3 組" in response.text
-    assert "現在の受付はありません" in response.text
+    assert "ブランドを選択" in response.text
+    assert "炭焼きレストラン さわやか" in response.text
+    assert "/merchants/sawayaka" in response.text
     assert "access_token" not in response.text
     assert "liff-secret" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_merchant_page_renders_japanese_shop_console_shell() -> None:
+    app = create_app(FakeDashboardService())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/merchants/sawayaka")
+
+    assert response.status_code == 200
+    assert "受付可能" in response.text
+    assert "すべての店舗" in response.text
+    assert "現在の順番待ち" in response.text
+    assert "店舗名・地域で検索" in response.text
+    assert response.text.count('class="dialog-close" type="button"') == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path", "json"),
+    [
+        ("POST", "/api/merchants/sawayaka/refresh", None),
+        (
+            "POST",
+            "/api/merchants/sawayaka/waiting",
+            {"shop_id": 3272, "adult_count": 2, "child_count": 0},
+        ),
+        ("DELETE", "/api/merchants/sawayaka/waiting/125000001", None),
+    ],
+)
+async def test_state_changing_requests_reject_cross_origin(
+    method: str,
+    path: str,
+    json: dict[str, int] | None,
+) -> None:
+    app = create_app(FakeDashboardService())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.request(
+            method,
+            path,
+            json=json,
+            headers={"Origin": "https://example.invalid"},
+        )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "この操作は許可されていません"}
 
 
 @pytest.mark.asyncio

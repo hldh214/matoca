@@ -10,9 +10,19 @@ The working implementation currently supports:
 - Atomic native credential rotation through the captured Thrift Compact
   Protocol endpoint.
 - LIFF access-token issuance and per-LIFF caching.
-- Matoca `/liff/auth`, `/liff/shops`, and `/liff/waiting`.
-- A responsive FastAPI Web UI showing authentication status, current
-  receptions, shop search, and waiting counts.
+- Matoca shop details, waiting status, queue creation, and cancellation.
+- A responsive Japanese Web console for scanning and operating supported merchants.
+
+## Supported Merchants
+
+| Merchant | Status | Capabilities |
+| --- | --- | --- |
+| 炭焼きレストラン さわやか | Supported | Shop availability, wait estimates, join queue, current queue, cancellation |
+
+Supported merchants are defined by the tracked internal registry
+`src/matoca_service/merchant_registry.toml`. Users configure LINE client metadata and
+authentication state, not merchant endpoints. A new merchant is added only after its
+authentication and queue protocol have been verified from captures.
 
 The real Sawayaka flow was verified on 2026-09-10:
 
@@ -36,9 +46,9 @@ Install `uv`, then run:
 uv python install 3.14
 uv sync --all-groups
 cp .env.example .env
-cp config.example.toml config.toml
+cp line_client.example.toml line_client.toml
 cp state.example.json state.json
-chmod 600 .env config.toml state.json
+chmod 600 .env line_client.toml state.json
 ```
 
 Replace only the placeholder values in `state.json`:
@@ -71,11 +81,11 @@ uv run matoca-web
 The default address is:
 
 ```text
-http://127.0.0.1:8080
+http://127.0.0.1:48173
 ```
 
-For a private server, keep this loopback binding and point Cloudflare Tunnel
-or another trusted reverse proxy at it. The application intentionally does
+For a private server, bind to the private interface used by Cloudflare Tunnel
+or another trusted reverse proxy. The application intentionally does
 not implement user login because the deployment is expected to be protected
 by the external access-control layer.
 
@@ -106,13 +116,12 @@ All paths in this document are relative to the repository root unless stated
 otherwise. The application does not depend on a specific checkout directory,
 operating-system user, or hosting provider.
 
-The future Web service runs as one process and listens on a configurable
-address. For a private server deployment, the recommended default is
-`127.0.0.1` behind a trusted reverse proxy or access-control tunnel.
+The Web service runs as one process and listens on a configurable address.
+Bind it only to the private interface reached by the trusted reverse proxy or
+access-control tunnel; it does not accept a CIDR setting itself.
 
-The application still performs Origin and CSRF validation for state-changing
-requests. It never displays raw LINE or LIFF tokens in the Web UI, logs, test
-reports, or exception messages.
+The application never displays raw LINE or LIFF tokens in the Web UI, logs,
+test reports, or exception messages.
 
 ## Python and Package Management
 
@@ -190,7 +199,9 @@ Ignored files:
 
 ```text
 .env
-config.toml
+line_client.toml
+shop_catalog.json
+shop_catalog.lock
 state.json
 state.lock
 events.jsonl
@@ -201,7 +212,7 @@ Tracked templates:
 
 ```text
 .env.example
-config.example.toml
+line_client.example.toml
 state.example.json
 ```
 
@@ -220,7 +231,7 @@ File permissions:
 
 ```text
 .env        0600
-config.toml 0600
+line_client.toml 0600
 state.json  0600
 ```
 
@@ -229,39 +240,31 @@ state.json  0600
 `.env` contains fixed process configuration only:
 
 ```dotenv
-MATOCA_CONFIG_FILE=./config.toml
+MATOCA_LINE_CLIENT_FILE=./line_client.toml
 MATOCA_STATE_FILE=./state.json
+MATOCA_SHOP_CACHE_FILE=./shop_catalog.json
 MATOCA_LOG_LEVEL=INFO
 MATOCA_HOST=127.0.0.1
-MATOCA_PORT=8080
+MATOCA_PORT=48173
 ```
 
 It does not contain LINE access tokens, refresh tokens, LIFF tokens, or other
 rotating authentication data.
 
-### `config.toml`
+### `line_client.toml`
 
-`config.toml` contains fixed merchant and client metadata:
+`line_client.toml` contains device-dependent LINE client metadata:
 
 ```toml
-[line]
 host = "legy-jp.line-apps.com"
 application = "ANDROIDSECONDARY\t26.11.0\tAndroid OS\t14"
 locale = "en_US"
 protocol_version = "1"
 user_agent = "Line/26.11.0"
-
-[merchants.sawayaka]
-name = "Sawayaka"
-liff_id = "2006055787-m6P6OJ38"
-api_base_url = "https://admin.junbanmachi.jp"
-origin = "https://exclusive-mini.junbanmachi.jp"
-entry_url = "https://exclusive-mini.junbanmachi.jp/sawayaka/"
-line_entry_url = "line://app/2006055787-m6P6OJ38"
 ```
 
-Merchant configuration is data. Protocol clients do not contain
-Sawayaka-specific branches.
+The built-in merchant registry is part of the project source. `shop_catalog.json` is a
+disposable 24-hour runtime cache and is never committed.
 
 ### `state.json`
 
@@ -563,8 +566,8 @@ src/matoca_service/
     waiting_poll.py
 ```
 
-The Web UI is designed to run behind a trusted access-control layer. It uses
-browser geolocation with an explicit manual fallback for queue operations.
+The Web UI is designed to run behind a trusted access-control layer. Queue operations
+use the selected shop coordinates supplied by Matoca and do not request browser geolocation.
 
 ## Initial Project Structure
 

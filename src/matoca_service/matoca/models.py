@@ -65,3 +65,17 @@ class Waiting(MatocaModel):
     adult_count: int | None = None
     child_count: int | None = None
     status: str | None = None
+
+
+class CreateWaitingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shop_id: str
+    adult_count: int
+    child_count: int
+    answer1: int | None = 0
+    answer2: int | None = None
+    lat: float
+    lng: float
+    in_advance_information: str = ""
+    ref: str = "web"
