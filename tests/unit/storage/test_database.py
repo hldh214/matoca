@@ -17,7 +17,7 @@ def test_initialize_creates_private_database_and_schema(tmp_path: Path) -> None:
     assert stat.S_IMODE(database.path.stat().st_mode) == 0o600
     assert (
         database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 1
+        == 2
     )
 
 

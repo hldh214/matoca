@@ -15,7 +15,67 @@ def _bootstrap_metadata(connection: sqlite3.Connection) -> None:
     )
 
 
-MIGRATIONS: tuple[Migration, ...] = (_bootstrap_metadata,)
+def _create_business_storage(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE shops (
+            merchant_key TEXT NOT NULL,
+            shop_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            sub_name TEXT,
+            address TEXT,
+            tel TEXT,
+            lat TEXT,
+            lng TEXT,
+            image_url TEXT,
+            forms_json TEXT,
+            options_json TEXT NOT NULL,
+            last_detail_at TEXT,
+            PRIMARY KEY (merchant_key, shop_id)
+        );
+
+        CREATE TABLE shop_observations (
+            merchant_key TEXT NOT NULL,
+            shop_id INTEGER NOT NULL,
+            observed_minute TEXT NOT NULL,
+            current_waiting INTEGER NOT NULL,
+            waiting_minutes INTEGER,
+            waiting_is_more INTEGER NOT NULL,
+            is_open INTEGER,
+            is_issuable INTEGER,
+            is_holiday INTEGER NOT NULL,
+            is_suspended INTEGER NOT NULL,
+            list_fresh INTEGER NOT NULL,
+            detail_fresh INTEGER NOT NULL,
+            error_code TEXT,
+            PRIMARY KEY (merchant_key, shop_id, observed_minute),
+            FOREIGN KEY (merchant_key, shop_id)
+                REFERENCES shops (merchant_key, shop_id)
+        );
+
+        CREATE INDEX shop_observations_history
+        ON shop_observations (merchant_key, shop_id, observed_minute DESC);
+
+        CREATE TABLE merchant_poll_state (
+            merchant_key TEXT PRIMARY KEY,
+            last_attempt_at TEXT,
+            last_success_at TEXT,
+            retry_at TEXT,
+            error_code TEXT
+        );
+
+        CREATE TABLE preferences (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            default_adult_count INTEGER NOT NULL,
+            default_child_count INTEGER NOT NULL,
+            early_tolerance_minutes INTEGER NOT NULL,
+            model_error_minutes INTEGER NOT NULL
+        );
+        """
+    )
+
+
+MIGRATIONS: tuple[Migration, ...] = (_bootstrap_metadata, _create_business_storage)
 
 
 def migrate(connection: sqlite3.Connection) -> None:
