@@ -1,0 +1,16 @@
+.env
+config.toml
+state.json
+state.lock
+events.jsonl
+*.tmp
+
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+coverage.xml
+.coverage
+__pycache__/
+*.py[cod]

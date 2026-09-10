@@ -1,0 +1,14 @@
+[line]
+host = "legy-jp.line-apps.com"
+application = "ANDROIDSECONDARY\t26.11.0\tAndroid OS\t14"
+locale = "en_US"
+protocol_version = "1"
+user_agent = "Line/26.11.0"
+
+[merchants.sawayaka]
+name = "Sawayaka"
+liff_id = "2006055787-m6P6OJ38"
+api_base_url = "https://admin.junbanmachi.jp"
+origin = "https://exclusive-mini.junbanmachi.jp"
+entry_url = "https://exclusive-mini.junbanmachi.jp/sawayaka/"
+line_entry_url = "line://app/2006055787-m6P6OJ38"

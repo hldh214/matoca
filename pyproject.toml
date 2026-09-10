@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "matoca-service"
+version = "0.1.0"
+description = "A portable LINE authentication and Matoca service client"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "httpx[http2]>=0.28.1,<0.29",
+    "pydantic>=2.11,<3",
+    "pydantic-settings>=2.10,<3",
+    "thrift>=0.22,<0.23",
+    "typer>=0.16,<1",
+]
+
+[project.scripts]
+matoca-line = "matoca_service.cli:app"
+
+[dependency-groups]
+dev = [
+    "coverage>=7.10,<8",
+    "mypy>=1.17,<2",
+    "pytest>=8.4,<9",
+    "pytest-asyncio>=1.1,<2",
+    "respx>=0.22,<0.23",
+    "ruff>=0.12,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/matoca_service"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
+markers = [
+    "live: calls the real LINE service and is skipped by default",
+    "destructive_refresh: rotates the configured native LINE credentials",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+packages = ["matoca_service"]
+
+[tool.coverage.run]
+branch = true
+source = ["matoca_service"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

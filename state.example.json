@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "line": {
+    "access_token": "...",
+    "refresh_token": "...",
+    "access_expires_at": null,
+    "refresh_expires_at": null,
+    "rtid": null,
+    "aid": null,
+    "lsid": null,
+    "adid": "...",
+    "updated_at": null
+  },
+  "liff_tokens": {}
+}
