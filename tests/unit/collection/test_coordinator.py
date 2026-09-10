@@ -49,6 +49,16 @@ class FailingCollector:
         raise self.error
 
 
+class SlowFailingCollector:
+    def __init__(self, advance: Callable[[], None], error: Exception) -> None:
+        self._advance = advance
+        self._error = error
+
+    async def collect(self, merchant_key: str) -> None:
+        self._advance()
+        raise self._error
+
+
 class SuccessfulCollector:
     def __init__(self) -> None:
         self.started = asyncio.Event()
@@ -133,6 +143,30 @@ async def test_429_sets_merchant_retry_deadline() -> None:
     assert state.last_attempt_at == NOW
     assert state.retry_at == NOW + timedelta(minutes=3)
     assert state.error_code == "rate_limited"
+    assert state.failure_count == 1
+
+
+@pytest.mark.asyncio
+async def test_slow_429_calculates_retry_deadline_from_failure_time() -> None:
+    repository = MemoryRepository()
+    current = NOW
+
+    def now() -> datetime:
+        return current
+
+    def advance() -> None:
+        nonlocal current
+        current += timedelta(minutes=2)
+
+    collector = SlowFailingCollector(
+        advance, CollectionRateLimited(retry_after=timedelta(minutes=1))
+    )
+
+    await coordinator_for(collector, repository, now).run_once()
+
+    state = repository.poll_state("sawayaka")
+    assert state.last_attempt_at == NOW
+    assert state.retry_at == NOW + timedelta(minutes=3)
 
 
 @pytest.mark.asyncio
@@ -164,6 +198,28 @@ async def test_http_429_honors_zero_second_retry_after_header() -> None:
 
 
 @pytest.mark.asyncio
+async def test_missing_retry_after_progresses_after_retry_after_failure() -> None:
+    repository = MemoryRepository()
+    current = NOW
+
+    def now() -> datetime:
+        return current
+
+    coordinator = coordinator_for(
+        ScriptedCollector([CollectionRateLimited(timedelta(minutes=3)), CollectionRateLimited()]),
+        repository,
+        now,
+    )
+    await coordinator.run_once()
+    current += timedelta(minutes=3)
+    await coordinator.run_once()
+
+    state = repository.poll_state("sawayaka")
+    assert state.failure_count == 2
+    assert state.retry_at == current + timedelta(minutes=2)
+
+
+@pytest.mark.asyncio
 async def test_missing_retry_after_uses_bounded_exponential_backoff() -> None:
     repository = MemoryRepository()
     current = NOW
@@ -173,12 +229,13 @@ async def test_missing_retry_after_uses_bounded_exponential_backoff() -> None:
 
     coordinator = coordinator_for(FailingCollector(CollectionRateLimited()), repository, now)
     deadlines: list[datetime | None] = []
-    for expected_delay in (1, 2, 4, 8, 15):
+    for failure_count, expected_delay in enumerate((1, 2, 4, 8, 15), start=1):
         await coordinator.run_once()
         deadline = repository.poll_state("sawayaka").retry_at
         deadlines.append(deadline)
         assert deadline == current + timedelta(minutes=expected_delay)
         assert deadline is not None
+        assert repository.poll_state("sawayaka").failure_count == failure_count
         current = deadline
 
     assert deadlines == [
@@ -187,6 +244,39 @@ async def test_missing_retry_after_uses_bounded_exponential_backoff() -> None:
         NOW + timedelta(minutes=7),
         NOW + timedelta(minutes=15),
         NOW + timedelta(minutes=30),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_slow_failures_progress_through_backoff_rungs() -> None:
+    repository = MemoryRepository()
+    current = NOW
+
+    def now() -> datetime:
+        return current
+
+    def advance() -> None:
+        nonlocal current
+        current += timedelta(minutes=2)
+
+    coordinator = coordinator_for(
+        SlowFailingCollector(advance, CollectionRateLimited()), repository, now
+    )
+    deadlines: list[datetime] = []
+    for expected_count in range(1, 6):
+        await coordinator.run_once()
+        state = repository.poll_state("sawayaka")
+        assert state.failure_count == expected_count
+        assert state.retry_at is not None
+        deadlines.append(state.retry_at)
+        current = state.retry_at
+
+    assert deadlines == [
+        NOW + timedelta(minutes=3),
+        NOW + timedelta(minutes=7),
+        NOW + timedelta(minutes=13),
+        NOW + timedelta(minutes=23),
+        NOW + timedelta(minutes=40),
     ]
 
 
@@ -215,6 +305,7 @@ async def test_success_resets_retry_deadline_and_fallback_sequence() -> None:
     assert succeeded.last_success_at == current
     assert succeeded.retry_at is None
     assert succeeded.error_code is None
+    assert succeeded.failure_count == 0
 
     current += timedelta(minutes=5)
     await coordinator.run_once()

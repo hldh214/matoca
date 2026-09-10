@@ -6,7 +6,12 @@ import pytest
 
 from matoca_service.matoca.models import Shop, WaitingEstimate
 from matoca_service.storage.database import Database
-from matoca_service.storage.models import CollectionWrite, ShopObservation, UserPreferences
+from matoca_service.storage.models import (
+    CollectionWrite,
+    MerchantPollState,
+    ShopObservation,
+    UserPreferences,
+)
 from matoca_service.storage.repositories import PreferenceRepository, ShopRepository
 
 TOKYO = ZoneInfo("Asia/Tokyo")
@@ -176,3 +181,18 @@ def test_preference_update_replaces_the_global_preferences(database: Database) -
 
     assert updated == UserPreferences(3, 1, 10, 20)
     assert repository.get() == updated
+
+
+def test_poll_state_persists_nonnegative_failure_count(database: Database) -> None:
+    repository = ShopRepository(database)
+    state = MerchantPollState(
+        merchant_key="sawayaka",
+        last_attempt_at=datetime(2026, 9, 10, 8, tzinfo=UTC),
+        retry_at=datetime(2026, 9, 10, 8, 2, tzinfo=UTC),
+        error_code="rate_limited",
+        failure_count=2,
+    )
+
+    repository.update_poll_state(state)
+
+    assert repository.poll_state("sawayaka") == state

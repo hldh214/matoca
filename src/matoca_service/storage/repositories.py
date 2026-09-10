@@ -205,7 +205,8 @@ class ShopRepository:
     def _poll_state(self, connection: sqlite3.Connection, merchant_key: str) -> MerchantPollState:
         row = connection.execute(
             """
-            SELECT merchant_key, last_attempt_at, last_success_at, retry_at, error_code
+            SELECT merchant_key, last_attempt_at, last_success_at, retry_at,
+                   error_code, failure_count
             FROM merchant_poll_state WHERE merchant_key = ?
             """,
             (merchant_key,),
@@ -218,19 +219,21 @@ class ShopRepository:
             last_success_at=_parse_optional_datetime(row[2]),
             retry_at=_parse_optional_datetime(row[3]),
             error_code=row[4],
+            failure_count=int(cast(int | str, row[5])),
         )
 
     def _update_poll_state(self, connection: sqlite3.Connection, state: MerchantPollState) -> None:
         connection.execute(
             """
             INSERT INTO merchant_poll_state (
-                merchant_key, last_attempt_at, last_success_at, retry_at, error_code
-            ) VALUES (?, ?, ?, ?, ?)
+                merchant_key, last_attempt_at, last_success_at, retry_at, error_code, failure_count
+            ) VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (merchant_key) DO UPDATE SET
                 last_attempt_at = excluded.last_attempt_at,
                 last_success_at = excluded.last_success_at,
                 retry_at = excluded.retry_at,
-                error_code = excluded.error_code
+                error_code = excluded.error_code,
+                failure_count = excluded.failure_count
             """,
             (
                 state.merchant_key,
@@ -238,6 +241,7 @@ class ShopRepository:
                 _serialize_optional_datetime(state.last_success_at),
                 _serialize_optional_datetime(state.retry_at),
                 state.error_code,
+                state.failure_count,
             ),
         )
 

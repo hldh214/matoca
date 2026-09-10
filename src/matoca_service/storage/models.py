@@ -77,6 +77,11 @@ class MerchantPollState:
     last_success_at: datetime | None = None
     retry_at: datetime | None = None
     error_code: str | None = None
+    failure_count: int = 0
+
+    def __post_init__(self) -> None:
+        if self.failure_count < 0:
+            raise ValueError("failure_count must be nonnegative")
 
 
 @dataclass(frozen=True)

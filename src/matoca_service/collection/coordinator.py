@@ -108,9 +108,12 @@ class CollectionCoordinator:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            retry_after = _retry_after(error, now)
-            delay = retry_after if retry_after is not None else _next_backoff(previous)
-            retry_at = now + delay
+            failure_at = self._now()
+            retry_after = _retry_after(error, failure_at)
+            delay = (
+                retry_after if retry_after is not None else _next_backoff(previous.failure_count)
+            )
+            retry_at = failure_at + delay
             self._repository.update_poll_state(
                 MerchantPollState(
                     merchant_key=merchant_key,
@@ -118,6 +121,7 @@ class CollectionCoordinator:
                     last_success_at=previous.last_success_at,
                     retry_at=retry_at,
                     error_code=_error_code(error),
+                    failure_count=min(previous.failure_count + 1, len(BACKOFF_INTERVALS)),
                 )
             )
             self._next_due[merchant_key] = retry_at
@@ -127,6 +131,7 @@ class CollectionCoordinator:
                     merchant_key=merchant_key,
                     last_attempt_at=now,
                     last_success_at=now,
+                    failure_count=0,
                 )
             )
             self._next_due[merchant_key] = now + self._schedule.next_interval(
@@ -186,15 +191,8 @@ def _retry_after(error: Exception, now: datetime) -> timedelta | None:
     return timedelta(seconds=max(0, seconds))
 
 
-def _next_backoff(state: MerchantPollState) -> timedelta:
-    if state.last_attempt_at is None or state.retry_at is None:
-        return BACKOFF_INTERVALS[0]
-    previous_delay = state.retry_at - state.last_attempt_at
-    try:
-        index = BACKOFF_INTERVALS.index(previous_delay)
-    except ValueError:
-        return BACKOFF_INTERVALS[0]
-    return BACKOFF_INTERVALS[min(index + 1, len(BACKOFF_INTERVALS) - 1)]
+def _next_backoff(failure_count: int) -> timedelta:
+    return BACKOFF_INTERVALS[min(failure_count, len(BACKOFF_INTERVALS) - 1)]
 
 
 def _error_code(error: Exception) -> str:

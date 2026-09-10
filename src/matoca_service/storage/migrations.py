@@ -67,7 +67,8 @@ def _create_business_storage(connection: sqlite3.Connection) -> None:
             last_attempt_at TEXT,
             last_success_at TEXT,
             retry_at TEXT,
-            error_code TEXT
+            error_code TEXT,
+            failure_count INTEGER NOT NULL CHECK (failure_count >= 0)
         )
         """,
         """
