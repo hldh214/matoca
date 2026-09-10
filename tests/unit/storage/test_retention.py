@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -99,3 +100,95 @@ def test_rollup_runs_at_most_once_per_tokyo_day(database: Database) -> None:
 
     assert result.raw_deleted == 0
     assert len(repository.observations("sawayaka", 3272, limit=10)) == 1
+
+
+def test_rollup_merges_detail_only_data_after_a_list_only_rollup(database: Database) -> None:
+    repository = ShopRepository(database)
+    observed_at = NOW - timedelta(days=181)
+    repository.save_cycle(
+        cycle_at(
+            observed_at,
+            waiting=10,
+            waiting_minutes=None,
+            detail_fresh=False,
+        )
+    )
+    repository.rollup_and_prune(NOW)
+    repository.save_cycle(
+        cycle_at(
+            observed_at + timedelta(minutes=1),
+            waiting=99,
+            waiting_minutes=25,
+            list_fresh=False,
+        )
+    )
+
+    repository.rollup_and_prune(NOW + timedelta(days=1))
+
+    rollup = repository.rollups("sawayaka", 3272)[0]
+    assert rollup.sample_count == 1
+    assert rollup.average_waiting == 10.0
+    assert rollup.waiting_minutes_sample_count == 1
+    assert rollup.average_waiting_minutes == 25.0
+
+
+def test_rollup_merges_list_only_data_after_a_detail_only_rollup(database: Database) -> None:
+    repository = ShopRepository(database)
+    observed_at = NOW - timedelta(days=181)
+    repository.save_cycle(
+        cycle_at(
+            observed_at,
+            waiting=99,
+            waiting_minutes=25,
+            list_fresh=False,
+        )
+    )
+    repository.rollup_and_prune(NOW)
+    repository.save_cycle(
+        cycle_at(
+            observed_at + timedelta(minutes=1),
+            waiting=10,
+            waiting_minutes=None,
+            detail_fresh=False,
+        )
+    )
+
+    repository.rollup_and_prune(NOW + timedelta(days=1))
+
+    rollup = repository.rollups("sawayaka", 3272)[0]
+    assert rollup.sample_count == 1
+    assert rollup.average_waiting == 10.0
+    assert rollup.waiting_minutes_sample_count == 1
+    assert rollup.average_waiting_minutes == 25.0
+
+
+def test_rollup_failure_rolls_back_raw_deletion_and_maintenance_metadata(
+    database: Database,
+) -> None:
+    repository = ShopRepository(database)
+    repository.save_cycle(cycle_at(NOW - timedelta(days=181), waiting=10))
+    database.write(
+        lambda connection: connection.execute(
+            """
+            CREATE TRIGGER fail_rollup_insert
+            BEFORE INSERT ON shop_observation_rollups_5m
+            BEGIN
+                SELECT RAISE(ABORT, 'rollup insert failed');
+            END
+            """
+        )
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="rollup insert failed"):
+        repository.rollup_and_prune(NOW)
+
+    assert len(repository.observations("sawayaka", 3272, limit=10)) == 1
+    assert repository.rollups("sawayaka", 3272) == []
+    assert (
+        database.read(
+            lambda connection: connection.execute(
+                "SELECT value FROM database_metadata WHERE key = 'shop_observation_retention_day'"
+            ).fetchone()
+        )
+        is None
+    )

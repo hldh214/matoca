@@ -284,11 +284,15 @@ class ShopRepository:
                     WHEN excluded.sample_count = 0 THEN shop_observation_rollups_5m.maximum_waiting
                     ELSE MAX(shop_observation_rollups_5m.maximum_waiting, excluded.maximum_waiting)
                 END,
-                average_waiting = (
-                    shop_observation_rollups_5m.average_waiting
-                    * shop_observation_rollups_5m.sample_count
-                    + excluded.average_waiting * excluded.sample_count
-                ) / (shop_observation_rollups_5m.sample_count + excluded.sample_count),
+                average_waiting = CASE
+                    WHEN shop_observation_rollups_5m.sample_count = 0 THEN excluded.average_waiting
+                    WHEN excluded.sample_count = 0 THEN shop_observation_rollups_5m.average_waiting
+                    ELSE (
+                        shop_observation_rollups_5m.average_waiting
+                        * shop_observation_rollups_5m.sample_count
+                        + excluded.average_waiting * excluded.sample_count
+                    ) / (shop_observation_rollups_5m.sample_count + excluded.sample_count)
+                END,
                 waiting_minutes_sample_count = (
                     shop_observation_rollups_5m.waiting_minutes_sample_count
                     + excluded.waiting_minutes_sample_count
@@ -313,14 +317,20 @@ class ShopRepository:
                         excluded.maximum_waiting_minutes
                     )
                 END,
-                average_waiting_minutes = (
-                    shop_observation_rollups_5m.average_waiting_minutes
-                    * shop_observation_rollups_5m.waiting_minutes_sample_count
-                    + excluded.average_waiting_minutes * excluded.waiting_minutes_sample_count
-                ) / (
-                    shop_observation_rollups_5m.waiting_minutes_sample_count
-                    + excluded.waiting_minutes_sample_count
-                )
+                average_waiting_minutes = CASE
+                    WHEN shop_observation_rollups_5m.waiting_minutes_sample_count = 0
+                        THEN excluded.average_waiting_minutes
+                    WHEN excluded.waiting_minutes_sample_count = 0
+                        THEN shop_observation_rollups_5m.average_waiting_minutes
+                    ELSE (
+                        shop_observation_rollups_5m.average_waiting_minutes
+                        * shop_observation_rollups_5m.waiting_minutes_sample_count
+                        + excluded.average_waiting_minutes * excluded.waiting_minutes_sample_count
+                    ) / (
+                        shop_observation_rollups_5m.waiting_minutes_sample_count
+                        + excluded.waiting_minutes_sample_count
+                    )
+                END
             """,
             (cutoff,),
         )

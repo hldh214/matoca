@@ -100,3 +100,60 @@ Successfully built dist/matoca_service-0.1.0-py3-none-any.whl
 ## Concerns
 
 None. The expected `dist/` build output remains ignored and untracked.
+
+## Fix Round 1
+
+### Changes
+
+- Corrected both weighted-average upserts to return the non-empty side's average
+  whenever the other side has a zero sample count, avoiding SQLite's `NULL * 0`
+  result.
+- Added directional rollup coverage for list-only followed by detail-only data, and
+  detail-only followed by list-only data, in the same five-minute bucket.
+- Added a trigger-driven failure regression that aborts the rollup insert and verifies
+  raw observations, rollups, and retention metadata all remain unchanged.
+- Recorded the reviewed late-historical-observation coverage suggestion as deferred in
+  the SDD ledger; it was not expanded into this fix round.
+
+### RED
+
+```text
+uv run pytest tests/unit/storage/test_retention.py -v
+```
+
+Result: 2 failed and 4 passed. The two new directional merge tests observed
+`average_waiting is None` where the existing rollup had zero samples for one metric.
+The trigger rollback regression passed against the existing transaction boundary.
+
+### GREEN
+
+```text
+uv run pytest tests/unit/storage/test_retention.py -v
+6 passed in 0.82s
+
+uv run pytest
+120 passed in 4.54s
+
+uv run ruff check src tests
+All checks passed!
+
+uv run ruff format --check src tests
+54 files already formatted
+
+uv run mypy src
+Success: no issues found in 31 source files
+```
+
+### Self-Review
+
+- Each average expression now has the same zero-count branches as its corresponding
+  minimum and maximum expression; the weighted formula runs only when both inputs
+  contain samples.
+- The failure test uses the actual SQLite transaction and an aborting trigger, rather
+  than a mock, so it confirms that neither deletion nor metadata advancement can
+  survive a failed rollup upsert.
+
+### Concerns
+
+None for this fix. Direct coverage for a late historical observation merged into an
+existing five-minute rollup remains deliberately deferred in the ledger.
