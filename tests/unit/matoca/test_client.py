@@ -1,9 +1,10 @@
 import httpx
 import pytest
 import respx
+from pydantic import ValidationError
 
 from matoca_service.config import MerchantConfig
-from matoca_service.matoca.client import MatocaClient
+from matoca_service.matoca.client import MatocaApiError, MatocaClient
 
 
 @pytest.fixture
@@ -73,3 +74,129 @@ async def test_waiting_returns_content_list(merchant: MerchantConfig) -> None:
         waiting = await client.list_waiting()
 
     assert waiting == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_shop_reads_content_shop(merchant: MerchantConfig) -> None:
+    route = respx.get("https://admin.junbanmachi.jp/liff/shops/3272").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "code": 200,
+                "content": {
+                    "shop": {
+                        "id": 3272,
+                        "name": "synthetic merchant",
+                        "waiting_time": {"minutes": 90, "is_more": True},
+                    }
+                },
+            },
+        )
+    )
+
+    async with httpx.AsyncClient() as http:
+        shop = await MatocaClient(merchant, http, "synthetic-liff").get_shop(3272)
+
+    assert route.calls[0].request.headers["authorization"] == "Bearer synthetic-liff"
+    assert shop.id == 3272
+    assert shop.waiting_time is not None
+    assert shop.waiting_time.minutes == 90
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_waiting_parses_non_empty_content(merchant: MerchantConfig) -> None:
+    respx.get("https://admin.junbanmachi.jp/liff/waiting").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "code": 200,
+                "content": [{"id": 125000001, "count": 72, "number": 87}],
+            },
+        )
+    )
+
+    async with httpx.AsyncClient() as http:
+        waiting = await MatocaClient(merchant, http, "synthetic-liff").list_waiting()
+
+    assert waiting[0].id == 125000001
+    assert waiting[0].count == 72
+    assert waiting[0].number == 87
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_waiting_rejects_non_numeric_count(merchant: MerchantConfig) -> None:
+    respx.get("https://admin.junbanmachi.jp/liff/waiting").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "code": 200,
+                "content": [{"id": 125000001, "count": "not-a-number"}],
+            },
+        )
+    )
+
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(ValidationError):
+            await MatocaClient(merchant, http, "synthetic-liff").list_waiting()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_waiting_reads_content_object(merchant: MerchantConfig) -> None:
+    respx.get("https://admin.junbanmachi.jp/liff/waiting/125000001").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "code": 200,
+                "content": {"id": 125000001, "count": 72, "number": 87},
+            },
+        )
+    )
+
+    async with httpx.AsyncClient() as http:
+        waiting = await MatocaClient(merchant, http, "synthetic-liff").get_waiting(125000001)
+
+    assert waiting.id == 125000001
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_shop_rejects_missing_shop_object(merchant: MerchantConfig) -> None:
+    respx.get("https://admin.junbanmachi.jp/liff/shops/3272").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "success", "code": 200, "content": {"shop": None}},
+        )
+    )
+
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(
+            MatocaApiError,
+            match="Matoca shop response has an invalid content shape",
+        ):
+            await MatocaClient(merchant, http, "synthetic-liff").get_shop(3272)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_waiting_rejects_non_object_content(merchant: MerchantConfig) -> None:
+    respx.get("https://admin.junbanmachi.jp/liff/waiting/125000001").mock(
+        return_value=httpx.Response(
+            200,
+            json={"status": "success", "code": 200, "content": []},
+        )
+    )
+
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(
+            MatocaApiError,
+            match="Matoca waiting response has an invalid content shape",
+        ):
+            await MatocaClient(merchant, http, "synthetic-liff").get_waiting(125000001)

@@ -159,3 +159,110 @@ line_entry_url = "line://app/2006055787-m6P6OJ38"
         JsonStateStore(state_path).load().liff_tokens["2006055787-m6P6OJ38"].access_token
         == "fresh-liff"
     )
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_shop_detail_reissues_liff_once_after_unauthorized(
+    tmp_path: Path,
+    jwt_factory: JwtFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[line]
+host = "legy-jp.line-apps.com"
+application = "ANDROIDSECONDARY\\t26.11.0\\tAndroid OS\\t14"
+locale = "en_US"
+protocol_version = "1"
+user_agent = "Line/26.11.0"
+
+[merchants.sawayaka]
+name = "Sawayaka"
+liff_id = "2006055787-m6P6OJ38"
+api_base_url = "https://admin.junbanmachi.jp"
+origin = "https://exclusive-mini.junbanmachi.jp"
+entry_url = "https://exclusive-mini.junbanmachi.jp/sawayaka/"
+line_entry_url = "line://app/2006055787-m6P6OJ38"
+""".strip(),
+        encoding="utf-8",
+    )
+    access = jwt_factory(
+        {
+            "jti": "access",
+            "rtid": "family",
+            "aud": "LINE",
+            "iat": 1_789_000_000,
+            "exp": 1_894_000_000,
+        }
+    )
+    refresh = jwt_factory(
+        {
+            "jti": "family",
+            "ati": "access",
+            "aud": "LINE",
+            "aid": "u-synthetic",
+            "iat": 1_789_000_000,
+            "exp": 1_925_000_000,
+        }
+    )
+    state_path = tmp_path / "state.json"
+    JsonStateStore(state_path).save(
+        AppState(
+            line=LineState(
+                access_token=access,
+                refresh_token=refresh,
+                adid="device-id",
+            ),
+            liff_tokens={
+                "2006055787-m6P6OJ38": LiffTokenState(
+                    access_token="stale-liff",
+                    issued_at=datetime(2026, 9, 10, tzinfo=UTC),
+                    expires_at=datetime(2030, 1, 1, tzinfo=UTC),
+                )
+            },
+        )
+    )
+
+    async def issue_fresh_liff(*args: object, **kwargs: object) -> LiffToken:
+        del args, kwargs
+        return LiffToken(
+            access_token="fresh-liff",
+            id_token="synthetic-id-token",
+            context_token="synthetic-context-token",
+            issued_at=datetime(2026, 9, 10, tzinfo=UTC),
+            expires_at=datetime(2030, 1, 1, tzinfo=UTC),
+        )
+
+    monkeypatch.setattr("matoca_service.line.liff.LiffClient.issue_view", issue_fresh_liff)
+    auth_route = respx.post("https://admin.junbanmachi.jp/liff/auth").mock(
+        side_effect=[
+            httpx.Response(401, json={"status": "error"}),
+            httpx.Response(200, json={"status": "success", "code": 200}),
+        ]
+    )
+    detail_route = respx.get("https://admin.junbanmachi.jp/liff/shops/3272").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "code": 200,
+                "content": {"shop": {"id": 3272, "name": "synthetic merchant"}},
+            },
+        )
+    )
+
+    result = await MatocaService(config_path, state_path).shop_detail("sawayaka", 3272)
+
+    assert result.id == 3272
+    assert len(auth_route.calls) == 2
+    assert len(detail_route.calls) == 1
+    assert [call.request.headers["authorization"] for call in auth_route.calls] == [
+        "Bearer stale-liff",
+        "Bearer fresh-liff",
+    ]
+    assert (
+        JsonStateStore(state_path).load().liff_tokens["2006055787-m6P6OJ38"].access_token
+        == "fresh-liff"
+    )

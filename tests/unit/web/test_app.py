@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from matoca_service.matoca.models import Shop, Waiting
 from matoca_service.service import DashboardData
 from matoca_service.web.app import create_app
 
@@ -39,6 +40,22 @@ class FakeDashboardService:
                 "waiting": [],
             }
         )
+
+    async def shop_detail(self, merchant_key: str, shop_id: int) -> Shop:
+        assert merchant_key == "sawayaka"
+        assert shop_id == 3272
+        return Shop.model_validate(
+            {
+                "id": shop_id,
+                "name": "synthetic merchant",
+                "waiting_time": {"minutes": 90, "is_more": True},
+            }
+        )
+
+    async def waiting_detail(self, merchant_key: str, waiting_id: int) -> Waiting:
+        assert merchant_key == "sawayaka"
+        assert waiting_id == 125000001
+        return Waiting(id=waiting_id, count=72, number=87)
 
 
 def test_web_module_import_does_not_require_runtime_files(tmp_path: Path) -> None:
@@ -90,3 +107,50 @@ async def test_dashboard_api_returns_structured_data() -> None:
     assert response.status_code == 200
     assert response.json()["shops"][0]["id"] == 3278
     assert response.json()["page"] == 2
+
+
+@pytest.mark.asyncio
+async def test_shop_detail_api_returns_structured_data() -> None:
+    app = create_app(FakeDashboardService())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/api/shops/3272", params={"merchant": "sawayaka"})
+
+    assert response.status_code == 200
+    assert response.json()["id"] == 3272
+    assert response.json()["waiting_time"] == {"minutes": 90, "is_more": True}
+
+
+@pytest.mark.asyncio
+async def test_waiting_detail_api_returns_structured_data() -> None:
+    app = create_app(FakeDashboardService())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(
+            "/api/waiting/125000001",
+            params={"merchant": "sawayaka"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == 125000001
+    assert response.json()["count"] == 72
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/shops/0", "/api/waiting/-1"])
+async def test_detail_apis_reject_non_positive_ids(path: str) -> None:
+    app = create_app(FakeDashboardService())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(path)
+
+    assert response.status_code == 422

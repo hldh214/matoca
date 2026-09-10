@@ -90,3 +90,25 @@ class MatocaClient:
         if not isinstance(content, list):
             raise MatocaApiError("Matoca waiting response has an invalid content shape")
         return [Waiting.model_validate(waiting) for waiting in content]
+
+    async def get_shop(self, shop_id: int) -> Shop:
+        response = await self._http.get(
+            f"{self._base_url}/liff/shops/{shop_id}",
+            headers=self._headers,
+        )
+        payload = await self._json(response)
+        content = payload.get("content")
+        if not isinstance(content, dict) or not isinstance(content.get("shop"), dict):
+            raise MatocaApiError("Matoca shop response has an invalid content shape")
+        return Shop.model_validate(content["shop"])
+
+    async def get_waiting(self, waiting_id: int) -> Waiting:
+        response = await self._http.get(
+            f"{self._base_url}/liff/waiting/{waiting_id}",
+            headers=self._headers,
+        )
+        payload = await self._json(response)
+        content = payload.get("content")
+        if not isinstance(content, dict):
+            raise MatocaApiError("Matoca waiting response has an invalid content shape")
+        return Waiting.model_validate(content)

@@ -1,6 +1,8 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
+from typing import TypeVar
 
 import httpx
 from pydantic import BaseModel, ConfigDict
@@ -12,6 +14,8 @@ from matoca_service.line.token_manager import TokenManager
 from matoca_service.matoca.client import MatocaClient
 from matoca_service.matoca.models import Shop, Waiting
 from matoca_service.state.store import JsonStateStore
+
+T = TypeVar("T")
 
 
 class DashboardData(BaseModel):
@@ -39,6 +43,51 @@ class MatocaService:
     ) -> DashboardData:
         async with self._operation_lock:
             return await self._dashboard_unlocked(merchant_key, keyword, page)
+
+    async def shop_detail(self, merchant_key: str, shop_id: int) -> Shop:
+        async with self._operation_lock:
+            return await self._authenticated_read(
+                merchant_key,
+                lambda client: client.get_shop(shop_id),
+            )
+
+    async def waiting_detail(self, merchant_key: str, waiting_id: int) -> Waiting:
+        async with self._operation_lock:
+            return await self._authenticated_read(
+                merchant_key,
+                lambda client: client.get_waiting(waiting_id),
+            )
+
+    async def _authenticated_read(
+        self,
+        merchant_key: str,
+        operation: Callable[[MatocaClient], Awaitable[T]],
+    ) -> T:
+        merchant = self._config.merchants[merchant_key]
+        async with httpx.AsyncClient(http2=True, timeout=30) as http:
+            manager = TokenManager(
+                self._store,
+                LineRefreshClient(self._config.line, http),
+                liff_client=LiffClient(self._config.line, http),
+            )
+            await manager.ensure_native_token()
+
+            async def fetch(*, force_liff: bool) -> T:
+                liff = await manager.ensure_liff_token(
+                    liff_id=merchant.liff_id,
+                    merchant=merchant,
+                    force=force_liff,
+                )
+                matoca = MatocaClient(merchant, http, liff.access_token)
+                await matoca.authenticate()
+                return await operation(matoca)
+
+            try:
+                return await fetch(force_liff=False)
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code not in {401, 403}:
+                    raise
+                return await fetch(force_liff=True)
 
     async def _dashboard_unlocked(
         self,

@@ -3,11 +3,13 @@ from typing import Protocol
 
 import uvicorn
 from fastapi import FastAPI, Query, Request
+from fastapi import Path as PathParameter
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from matoca_service.config import RuntimeSettings
+from matoca_service.matoca.models import Shop, Waiting
 from matoca_service.service import DashboardData, MatocaService
 
 WEB_ROOT = Path(__file__).parent
@@ -20,6 +22,10 @@ class DashboardService(Protocol):
         keyword: str | None,
         page: int = 1,
     ) -> DashboardData: ...
+
+    async def shop_detail(self, merchant_key: str, shop_id: int) -> Shop: ...
+
+    async def waiting_detail(self, merchant_key: str, waiting_id: int) -> Waiting: ...
 
 
 def create_app(service: DashboardService | None = None) -> FastAPI:
@@ -50,6 +56,20 @@ def create_app(service: DashboardService | None = None) -> FastAPI:
         page: int = Query(default=1, ge=1),
     ) -> DashboardData:
         return await dashboard_service.dashboard(merchant, keyword, page)
+
+    @app.get("/api/shops/{shop_id}", response_model=Shop)
+    async def shop_detail_api(
+        shop_id: int = PathParameter(ge=1),
+        merchant: str = Query(default="sawayaka"),
+    ) -> Shop:
+        return await dashboard_service.shop_detail(merchant, shop_id)
+
+    @app.get("/api/waiting/{waiting_id}", response_model=Waiting)
+    async def waiting_detail_api(
+        waiting_id: int = PathParameter(ge=1),
+        merchant: str = Query(default="sawayaka"),
+    ) -> Waiting:
+        return await dashboard_service.waiting_detail(merchant, waiting_id)
 
     return app
 
