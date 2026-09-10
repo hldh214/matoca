@@ -1,6 +1,4 @@
 import asyncio
-from collections.abc import Callable
-from datetime import datetime
 from typing import Protocol
 
 from matoca_service.collection.models import CollectionCycle
@@ -20,12 +18,9 @@ class CollectionService:
         self,
         reader: MerchantCycleReader,
         repository: CycleRepository,
-        *,
-        now: Callable[[], datetime] | None = None,
     ) -> None:
         self._reader = reader
         self._repository = repository
-        self._now = now
 
     async def collect(self, merchant_key: str) -> CollectionCycle:
         cycle = await self._reader.read_collection_cycle(merchant_key)

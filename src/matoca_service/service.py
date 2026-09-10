@@ -340,15 +340,34 @@ class MatocaService:
                             detail_fresh=True,
                         )
 
-                shops, waiting = await asyncio.gather(
-                    asyncio.gather(*(detail(shop) for shop in base_shops)),
-                    client.list_waiting(),
-                )
+                detail_tasks = [asyncio.create_task(detail(shop)) for shop in base_shops]
+                waiting_task = asyncio.create_task(client.list_waiting())
+                attempt_tasks = [*detail_tasks, waiting_task]
+                try:
+                    await asyncio.gather(*attempt_tasks)
+                except BaseException as error:
+                    for task in attempt_tasks:
+                        if not task.done():
+                            task.cancel()
+                    outcomes = await asyncio.gather(*attempt_tasks, return_exceptions=True)
+                    secondary_errors = [
+                        outcome
+                        for outcome in outcomes
+                        if isinstance(outcome, BaseException)
+                        and outcome is not error
+                        and not isinstance(outcome, asyncio.CancelledError)
+                    ]
+                    if secondary_errors:
+                        raise BaseExceptionGroup(
+                            "collection attempt failed with multiple errors",
+                            [error, *secondary_errors],
+                        ) from error
+                    raise
                 return CollectionCycle(
                     merchant_key=merchant_key,
                     observed_at=observed_at,
-                    shops=list(shops),
-                    waiting=waiting,
+                    shops=[task.result() for task in detail_tasks],
+                    waiting=waiting_task.result(),
                 )
 
             return await self._authenticated_read(merchant_key, fetch)

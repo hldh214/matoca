@@ -140,6 +140,63 @@ class CycleReadTestService(MatocaService):
         return await operation(self.client)
 
 
+class RetryRaceClient:
+    def __init__(self) -> None:
+        self.base_shops = [Shop(id=shop_id, name=f"List {shop_id}") for shop_id in range(1, 5)]
+        self.attempt = 0
+        self.first_attempt_ready = asyncio.Event()
+        self.release = asyncio.Event()
+        self.first_attempt_details = 0
+        self.active_details = 0
+        self.max_active_details = 0
+        self.retry_started_before_drain = False
+        self.waiting_cancelled = False
+
+    async def list_all_shops(self) -> list[Shop]:
+        self.attempt += 1
+        return self.base_shops
+
+    async def get_shop(self, shop_id: int) -> Shop:
+        self.active_details += 1
+        self.max_active_details = max(self.max_active_details, self.active_details)
+        try:
+            if self.attempt == 1:
+                self.first_attempt_details += 1
+                if self.first_attempt_details == 4:
+                    self.first_attempt_ready.set()
+                try:
+                    if shop_id == 1:
+                        await self.first_attempt_ready.wait()
+                        raise status_error(401)
+                    await self.release.wait()
+                finally:
+                    self.first_attempt_details -= 1
+            elif self.first_attempt_details:
+                self.retry_started_before_drain = True
+            return Shop(id=shop_id, name=f"Detail {shop_id}", is_open=True, is_issuable=True)
+        finally:
+            self.active_details -= 1
+
+    async def list_waiting(self) -> list[Waiting]:
+        if self.attempt == 1:
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                self.waiting_cancelled = True
+                raise
+        return []
+
+
+class RetryingCycleReadTestService(CycleReadTestService):
+    async def _authenticated_read(self, merchant_key: str, operation: Any) -> Any:
+        assert merchant_key == "sawayaka"
+        try:
+            return await operation(self.client)
+        except httpx.HTTPStatusError as error:
+            assert error.response.status_code == 401
+            return await operation(self.client)
+
+
 @pytest.mark.asyncio
 async def test_read_collection_cycle_enriches_list_shops_with_at_most_four_details() -> None:
     base_shops = [
@@ -177,8 +234,26 @@ async def test_read_collection_cycle_enriches_list_shops_with_at_most_four_detai
 
 
 @pytest.mark.asyncio
-async def test_read_collection_cycle_marks_failed_detail_unobserved_and_keeps_list_waiting(
-) -> None:
+async def test_read_collection_cycle_drains_first_attempt_before_unauthorized_retry() -> None:
+    client = RetryRaceClient()
+    service = RetryingCycleReadTestService(client)
+
+    try:
+        cycle = await service.read_collection_cycle("sawayaka")
+    finally:
+        client.release.set()
+
+    assert len(cycle.shops) == 4
+    assert client.first_attempt_details == 0
+    assert client.waiting_cancelled is True
+    assert client.retry_started_before_drain is False
+    assert client.max_active_details <= 4
+
+
+@pytest.mark.asyncio
+async def test_read_collection_cycle_marks_failed_detail_unobserved_and_keeps_list_waiting() -> (
+    None
+):
     base_shop = Shop(
         id=1,
         name="List 1",
