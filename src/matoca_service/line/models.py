@@ -9,6 +9,15 @@ class NativeTokenPair:
 
 
 @dataclass(frozen=True, slots=True)
+class LiffToken:
+    access_token: str = field(repr=False)
+    id_token: str = field(repr=False)
+    context_token: str = field(repr=False)
+    issued_at: datetime
+    expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class NativePairClaims:
     access_jti: str
     rtid: str

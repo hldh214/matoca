@@ -3,7 +3,10 @@ from thrift.Thrift import TMessageType, TType
 from thrift.transport.TTransport import TMemoryBuffer
 
 from matoca_service.line.thrift_codec import (
+    LiffViewRequest,
+    decode_liff_view_reply,
     decode_refresh_reply,
+    encode_issue_liff_view_call,
     encode_refresh_call,
     encode_report_refreshed_access_token_call,
 )
@@ -48,6 +51,40 @@ def build_refresh_reply(*, include_refresh_token: bool = True) -> bytes:
     return transport.getvalue()
 
 
+def build_liff_reply() -> bytes:
+    transport = TMemoryBuffer()
+    protocol = TCompactProtocol(transport)
+    protocol.writeMessageBegin("issueLiffView", TMessageType.REPLY, 1)
+    protocol.writeStructBegin("issueLiffView_result")
+    protocol.writeFieldBegin("success", TType.STRUCT, 0)
+    protocol.writeStructBegin("result")
+    protocol.writeFieldBegin("contextToken", TType.STRING, 2)
+    protocol.writeString("synthetic-context-token")
+    protocol.writeFieldEnd()
+    protocol.writeFieldBegin("accessToken", TType.STRING, 3)
+    protocol.writeString("synthetic-liff-access-token")
+    protocol.writeFieldEnd()
+    protocol.writeFieldBegin("idToken", TType.STRING, 7)
+    protocol.writeString("synthetic-id-token")
+    protocol.writeFieldEnd()
+    protocol.writeFieldBegin("expiresIn", TType.I64, 13)
+    protocol.writeI64(43_200)
+    protocol.writeFieldEnd()
+    protocol.writeFieldBegin("unknown", TType.LIST, 99)
+    protocol.writeListBegin(TType.I32, 2)
+    protocol.writeI32(1)
+    protocol.writeI32(2)
+    protocol.writeListEnd()
+    protocol.writeFieldEnd()
+    protocol.writeFieldStop()
+    protocol.writeStructEnd()
+    protocol.writeFieldEnd()
+    protocol.writeFieldStop()
+    protocol.writeStructEnd()
+    protocol.writeMessageEnd()
+    return transport.getvalue()
+
+
 def test_refresh_call_matches_synthetic_golden_bytes() -> None:
     assert encode_refresh_call("synthetic-refresh-token") == REFRESH_REQUEST_GOLDEN
 
@@ -63,3 +100,30 @@ def test_refresh_reply_extracts_typed_tokens_and_skips_unknown_fields() -> None:
 
     assert result.access_token == "synthetic-access-token"
     assert result.refresh_token == "synthetic-refresh-token"
+
+
+def test_issue_liff_view_call_contains_captured_request_fields() -> None:
+    request = LiffViewRequest(
+        liff_id="2006055787-m6P6OJ38",
+        line_user_id="u-synthetic",
+        adid="device-id",
+        line_entry_url="line://app/2006055787-m6P6OJ38?liff.state=%2Fwaiting%2F",
+    )
+
+    encoded = encode_issue_liff_view_call(request)
+
+    assert b"issueLiffView" in encoded
+    assert request.liff_id.encode() in encoded
+    assert request.line_user_id.encode() in encoded
+    assert request.adid.encode() in encoded
+    assert b"miniapp.line.me" in encoded
+    assert request.line_entry_url.encode() in encoded
+
+
+def test_liff_reply_extracts_access_token_and_lifetime() -> None:
+    result = decode_liff_view_reply(build_liff_reply())
+
+    assert result.access_token == "synthetic-liff-access-token"
+    assert result.id_token == "synthetic-id-token"
+    assert result.context_token == "synthetic-context-token"
+    assert result.expires_in == 43_200
