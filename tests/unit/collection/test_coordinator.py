@@ -133,6 +133,18 @@ async def test_stop_wakes_the_run_loop() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_runs_and_stop_stops_the_collection_loop() -> None:
+    collector = SuccessfulCollector()
+    coordinator = coordinator_for(collector, MemoryRepository())
+
+    coordinator.start()
+    await collector.started.wait()
+    await coordinator.stop()
+
+    assert coordinator._task is None
+
+
+@pytest.mark.asyncio
 async def test_429_sets_merchant_retry_deadline() -> None:
     repository = MemoryRepository()
     collector = FailingCollector(CollectionRateLimited(retry_after=timedelta(minutes=3)))

@@ -187,7 +187,7 @@ Web interface:
 - FastAPI and Uvicorn with one worker.
 - Jinja2 server-rendered HTML.
 
-No database is required for the current single-user, single-instance design.
+The single-user, single-instance runtime creates its local SQLite database automatically.
 
 ## Repository-Local Configuration
 
@@ -201,10 +201,9 @@ Ignored files:
 ```text
 .env
 line_client.toml
-shop_catalog.json
-shop_catalog.lock
 state.json
 state.lock
+data/
 events.jsonl
 *.tmp
 ```
@@ -243,7 +242,7 @@ state.json  0600
 ```dotenv
 MATOCA_LINE_CLIENT_FILE=./line_client.toml
 MATOCA_STATE_FILE=./state.json
-MATOCA_SHOP_CACHE_FILE=./shop_catalog.json
+MATOCA_DATABASE_FILE=./data/matoca.db
 MATOCA_LOG_LEVEL=INFO
 MATOCA_HOST=127.0.0.1
 MATOCA_PORT=48173
@@ -264,8 +263,8 @@ protocol_version = "1"
 user_agent = "Line/26.11.0"
 ```
 
-The built-in merchant registry is part of the project source. `shop_catalog.json` is a
-disposable 24-hour runtime cache and is never committed.
+The built-in merchant registry is part of the project source. SQLite data is stored in
+`data/matoca.db` and is never committed.
 
 ### `state.json`
 

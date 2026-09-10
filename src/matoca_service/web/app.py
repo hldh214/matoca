@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -70,14 +72,43 @@ class DashboardService(Protocol):
     async def cancel_waiting(self, merchant_key: str, waiting_id: int) -> None: ...
 
 
-def create_app(service: DashboardService | None = None) -> FastAPI:
-    settings = RuntimeSettings()
-    dashboard_service = service or MatocaService(
-        settings.line_client_file,
-        settings.state_file,
-        settings.shop_cache_file,
-    )
-    app = FastAPI(title="Matoca", docs_url=None, redoc_url=None)
+class CollectionLifecycle(Protocol):
+    def start(self) -> None: ...
+
+    async def stop(self) -> None: ...
+
+
+def create_app(
+    service: DashboardService | None = None,
+    *,
+    collection_coordinator: CollectionLifecycle | None = None,
+) -> FastAPI:
+    dashboard_service: DashboardService
+    coordinator: CollectionLifecycle | None
+    if service is None:
+        settings = RuntimeSettings()
+        dashboard_service = MatocaService(
+            settings.line_client_file,
+            settings.state_file,
+            settings.database_file,
+        )
+        coordinator = collection_coordinator or dashboard_service.collection_coordinator
+    else:
+        dashboard_service = service
+        coordinator = collection_coordinator
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        del app
+        if coordinator is not None:
+            coordinator.start()
+        try:
+            yield
+        finally:
+            if coordinator is not None:
+                await coordinator.stop()
+
+    app = FastAPI(title="Matoca", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=WEB_ROOT / "static"), name="static")
     templates = Jinja2Templates(directory=WEB_ROOT / "templates")
 

@@ -52,7 +52,6 @@ class RuntimeSettings(BaseSettings):
 
     line_client_file: Path = Path("./line_client.toml")
     state_file: Path = Path("./state.json")
-    shop_cache_file: Path = Path("./shop_catalog.json")
     database_file: Path = Path("./data/matoca.db")
     log_level: str = "INFO"
     host: str = "127.0.0.1"

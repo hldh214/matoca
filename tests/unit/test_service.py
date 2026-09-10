@@ -8,7 +8,7 @@ import httpx
 import pytest
 import respx
 
-from matoca_service.collection.models import CollectionCycle
+from matoca_service.collection.models import CollectedShop, CollectionCycle
 from matoca_service.line.models import LiffToken
 from matoca_service.matoca.client import MatocaApiError
 from matoca_service.matoca.models import Shop, ShopForms, Waiting
@@ -21,8 +21,133 @@ from matoca_service.service import (
 )
 from matoca_service.state.models import AppState, LiffTokenState, LineState
 from matoca_service.state.store import JsonStateStore
+from matoca_service.storage.database import Database
+from matoca_service.storage.models import CollectionWrite, ShopObservation
+from matoca_service.storage.repositories import ShopRepository
 
 type JwtFactory = Callable[[dict[str, Any]], str]
+
+
+@pytest.fixture
+def stored_service(tmp_path: Path) -> tuple[MatocaService, list[str]]:
+    line_client_path = tmp_path / "line_client.toml"
+    line_client_path.write_text(
+        "\n".join(
+            [
+                'host = "legy-jp.line-apps.com"',
+                'application = "synthetic-app"',
+                'locale = "ja_JP"',
+                'protocol_version = "1"',
+                'user_agent = "synthetic-agent"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    database = Database(tmp_path / "data" / "matoca.db")
+    database.initialize()
+    observed_at = datetime(2026, 9, 10, 8, tzinfo=UTC)
+    ShopRepository(database).save_cycle(
+        CollectionWrite(
+            merchant_key="sawayaka",
+            observed_at=observed_at,
+            shops=[
+                ShopObservation(
+                    shop=Shop(
+                        id=3272,
+                        name="Synthetic Shop",
+                        current_waiting=12,
+                        is_open=True,
+                        is_issuable=True,
+                    ),
+                    list_fresh=True,
+                    detail_fresh=True,
+                )
+            ],
+        )
+    )
+    return MatocaService(line_client_path, tmp_path / "state.json", database.path), []
+
+
+@pytest.mark.asyncio
+async def test_merchant_snapshot_uses_database_without_upstream_request(
+    stored_service: tuple[MatocaService, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, upstream_calls = stored_service
+
+    async def unexpected_collection(merchant_key: str) -> CollectionCycle:
+        upstream_calls.append(merchant_key)
+        raise AssertionError("stored snapshot must not collect upstream data")
+
+    monkeypatch.setattr(service, "read_collection_cycle", unexpected_collection)
+
+    snapshot = await service.merchant_snapshot("sawayaka")
+
+    assert snapshot.shops[0].id == 3272
+    assert snapshot.refreshed_at == datetime(2026, 9, 10, 8, tzinfo=UTC)
+    assert upstream_calls == []
+
+
+@pytest.mark.asyncio
+async def test_forced_merchant_snapshot_collects_then_reads_the_database(
+    stored_service: tuple[MatocaService, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, upstream_calls = stored_service
+    observed_at = datetime(2026, 9, 10, 8, 1, tzinfo=UTC)
+
+    async def collect(merchant_key: str) -> CollectionCycle:
+        upstream_calls.append(merchant_key)
+        return CollectionCycle(
+            merchant_key=merchant_key,
+            observed_at=observed_at,
+            shops=[
+                CollectedShop(
+                    shop=Shop(id=3272, name="Synthetic Shop", current_waiting=9),
+                    list_fresh=True,
+                    detail_fresh=True,
+                )
+            ],
+            waiting=[],
+        )
+
+    monkeypatch.setattr(service, "read_collection_cycle", collect)
+
+    snapshot = await service.merchant_snapshot("sawayaka", force_catalog=True)
+
+    assert snapshot.refreshed_at == observed_at
+    assert snapshot.shops[0].current_waiting == 9
+    assert upstream_calls == ["sawayaka"]
+
+
+@pytest.mark.asyncio
+async def test_merchant_snapshot_marks_partial_latest_cycle_stale(
+    stored_service: tuple[MatocaService, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _ = stored_service
+    observed_at = datetime(2026, 9, 10, 8, 1, tzinfo=UTC)
+
+    async def partial_collection(merchant_key: str) -> CollectionCycle:
+        return CollectionCycle(
+            merchant_key=merchant_key,
+            observed_at=observed_at,
+            shops=[
+                CollectedShop(
+                    shop=Shop(id=3272, name="Synthetic Shop", current_waiting=12),
+                    list_fresh=True,
+                    detail_fresh=False,
+                    error_code="timeout",
+                )
+            ],
+            waiting=[],
+        )
+
+    monkeypatch.setattr(service, "read_collection_cycle", partial_collection)
+
+    snapshot = await service.merchant_snapshot("sawayaka", force_catalog=True)
+
+    assert snapshot.stale is True
 
 
 def test_queue_submission_requires_currently_issuable_shop() -> None:
@@ -478,7 +603,9 @@ user_agent = "Line/26.11.0"
         )
     )
 
-    result = await MatocaService(config_path, state_path).dashboard("sawayaka", None)
+    result = await MatocaService(
+        config_path, state_path, tmp_path / "data" / "matoca.db"
+    ).dashboard("sawayaka", None)
 
     assert result.shops == []
     assert [call.request.headers["authorization"] for call in auth_route.calls] == [
@@ -575,7 +702,9 @@ user_agent = "Line/26.11.0"
         )
     )
 
-    result = await MatocaService(config_path, state_path).shop_detail("sawayaka", 3272)
+    result = await MatocaService(
+        config_path, state_path, tmp_path / "data" / "matoca.db"
+    ).shop_detail("sawayaka", 3272)
 
     assert result.id == 3272
     assert len(auth_route.calls) == 2

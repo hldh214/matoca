@@ -7,8 +7,10 @@ from typing import TypeVar
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from matoca_service.catalog import CatalogState, MerchantCatalog, ShopCatalogStore
+from matoca_service.collection.coordinator import CollectionCoordinator
 from matoca_service.collection.models import CollectedShop, CollectionCycle
+from matoca_service.collection.schedule import PollSchedule
+from matoca_service.collection.service import CollectionService
 from matoca_service.config import LineConfig, MerchantConfig, MerchantRegistry
 from matoca_service.line.liff import LiffClient
 from matoca_service.line.refresh import LineRefreshClient
@@ -16,9 +18,12 @@ from matoca_service.line.token_manager import TokenManager
 from matoca_service.matoca.client import MatocaApiError, MatocaClient
 from matoca_service.matoca.models import CreateWaitingRequest, Shop, ShopOptions, Waiting
 from matoca_service.state.store import JsonStateStore
+from matoca_service.storage.database import Database
+from matoca_service.storage.models import StoredShop
+from matoca_service.storage.repositories import ShopRepository
 
 T = TypeVar("T")
-SNAPSHOT_TTL = timedelta(seconds=60)
+SNAPSHOT_STALE_AFTER = timedelta(minutes=2)
 _LIST_IDENTITY_FIELDS = (
     "id",
     "name",
@@ -138,14 +143,26 @@ class MatocaService:
         self,
         line_client_path: Path,
         state_path: Path,
-        shop_cache_path: Path = Path("./shop_catalog.json"),
+        database_path: Path,
     ) -> None:
         self._line_config = LineConfig.from_toml(line_client_path)
         self._registry = MerchantRegistry.load_builtin()
         self._store = JsonStateStore(state_path)
-        self._catalog_store = ShopCatalogStore(shop_cache_path)
+        self._database = Database(database_path)
+        self._database.initialize()
+        self._shops = ShopRepository(self._database)
+        self._collector = CollectionService(self, self._shops)
+        self._collection_coordinator = CollectionCoordinator(
+            self._registry,
+            self._collector,
+            PollSchedule(self._shops),
+            self._shops,
+        )
         self._operation_lock = asyncio.Lock()
-        self._snapshots: dict[str, MerchantSnapshot] = {}
+
+    @property
+    def collection_coordinator(self) -> CollectionCoordinator:
+        return self._collection_coordinator
 
     def _merchant(self, merchant_key: str) -> MerchantConfig:
         try:
@@ -171,89 +188,53 @@ class MatocaService:
         *,
         force_catalog: bool = False,
     ) -> MerchantSnapshot:
-        async with self._operation_lock:
-            self._merchant(merchant_key)
-            existing = self._snapshots.get(merchant_key)
-            now = datetime.now(tz=UTC)
-            if (
-                not force_catalog
-                and existing is not None
-                and now - existing.refreshed_at < SNAPSHOT_TTL
-            ):
-                return existing
+        self._merchant(merchant_key)
+        stored_shops = await asyncio.to_thread(self._shops.latest, merchant_key)
+        if force_catalog or not stored_shops:
             try:
-                snapshot = await self._merchant_snapshot_unlocked(
-                    merchant_key,
-                    force_catalog=force_catalog,
-                )
+                await self._collector.collect(merchant_key)
             except httpx.HTTPError, MatocaApiError, OSError, ValueError:
-                if existing is None:
+                if not stored_shops:
                     raise
-                return existing.model_copy(update={"stale": True})
-            self._snapshots[merchant_key] = snapshot
-            return snapshot
+                return self._stored_snapshot(merchant_key, stored_shops, stale=True)
+            stored_shops = await asyncio.to_thread(self._shops.latest, merchant_key)
+        if not stored_shops:
+            raise RuntimeError("collection completed without storing shops")
+        return self._stored_snapshot(merchant_key, stored_shops)
 
-    async def _merchant_snapshot_unlocked(
+    def _stored_snapshot(
         self,
         merchant_key: str,
+        stored_shops: list[StoredShop],
         *,
-        force_catalog: bool,
+        stale: bool = False,
     ) -> MerchantSnapshot:
-        now = datetime.now(tz=UTC)
-        try:
-            catalog_state = self._catalog_store.load()
-        except OSError, ValueError:
-            catalog_state = CatalogState()
-        cached = catalog_state.merchants.get(merchant_key)
-        refresh_catalog = force_catalog or cached is None or not cached.fresh_for(now)
-
-        async def fetch(client: MatocaClient) -> tuple[list[Shop], list[Waiting], bool]:
-            partial_stale = False
-            if refresh_catalog:
-                base_shops = await client.list_all_shops()
-            else:
-                assert cached is not None
-                base_shops = cached.shops
-            semaphore = asyncio.Semaphore(4)
-
-            previous_snapshot = self._snapshots.get(merchant_key)
-            fallback_candidates = (
-                previous_snapshot.shops
-                if previous_snapshot is not None
-                else cached.shops
-                if cached is not None
-                else []
-            )
-            fallback_shops = {shop.id: shop for shop in fallback_candidates}
-
-            async def detail(shop: Shop) -> Shop:
-                nonlocal partial_stale
-                async with semaphore:
-                    try:
-                        return await client.get_shop(shop.id)
-                    except httpx.HTTPStatusError as error:
-                        if error.response.status_code in {401, 403}:
-                            raise
-                        partial_stale = True
-                        return fallback_shops.get(shop.id, shop)
-                    except httpx.RequestError, MatocaApiError, ValueError:
-                        partial_stale = True
-                        return fallback_shops.get(shop.id, shop)
-
-            shops, waiting = await asyncio.gather(
-                asyncio.gather(*(detail(shop) for shop in base_shops)),
-                client.list_waiting(),
-            )
-            return list(shops), waiting, partial_stale
-
-        shops, waiting, partial_stale = await self._authenticated_read(merchant_key, fetch)
-        if refresh_catalog:
-            merchants = dict(catalog_state.merchants)
-            merchants[merchant_key] = MerchantCatalog(refreshed_at=now, shops=shops)
-            try:
-                self._catalog_store.save(catalog_state.model_copy(update={"merchants": merchants}))
-            except OSError:
-                partial_stale = True
+        observations = [shop.observation for shop in stored_shops if shop.observation is not None]
+        if not observations:
+            raise RuntimeError("stored shops have no collection observations")
+        observed_timestamps: list[datetime] = []
+        for observation in observations:
+            observed_at = observation.observed_at
+            if observed_at is not None:
+                observed_timestamps.append(observed_at)
+        if not observed_timestamps:
+            raise RuntimeError("stored observations have no timestamps")
+        refreshed_at = max(observed_timestamps)
+        latest_cycle = [
+            observation for observation in observations if observation.observed_at == refreshed_at
+        ]
+        detail_timestamps: list[datetime] = []
+        for stored_shop in stored_shops:
+            detail_at = stored_shop.last_detail_at
+            if detail_at is not None:
+                detail_timestamps.append(detail_at)
+        latest_detail_at = max(detail_timestamps) if detail_timestamps else None
+        stale = stale or any(not observation.detail_fresh for observation in latest_cycle)
+        if (
+            latest_detail_at is None
+            or datetime.now(tz=UTC) - latest_detail_at > SNAPSHOT_STALE_AFTER
+        ):
+            stale = True
         merchant = self._merchant(merchant_key)
         return MerchantSnapshot(
             merchant=MerchantSummary(
@@ -263,10 +244,10 @@ class MatocaService:
                     str(merchant.cover_image_url) if merchant.cover_image_url else None
                 ),
             ),
-            refreshed_at=now,
-            shops=shops,
-            waiting=waiting,
-            stale=partial_stale,
+            refreshed_at=refreshed_at,
+            shops=[stored.shop for stored in stored_shops],
+            waiting=[],
+            stale=stale,
         )
 
     async def dashboard(

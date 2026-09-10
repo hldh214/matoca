@@ -19,8 +19,6 @@ def test_mutable_files_are_gitignored() -> None:
         "state.json",
         "state.lock",
         "line_client.toml",
-        "shop_catalog.json",
-        "shop_catalog.lock",
         "data/",
         ".env",
         "docs/superpowers/",
@@ -67,10 +65,9 @@ def test_line_client_profile_is_loaded_separately(tmp_path: Path) -> None:
     assert config.locale == "ja_JP"
 
 
-def test_runtime_settings_use_explicit_line_and_catalog_paths() -> None:
+def test_runtime_settings_use_explicit_line_and_database_paths() -> None:
     settings = RuntimeSettings(_env_file=None)
 
     assert settings.line_client_file == Path("line_client.toml")
-    assert settings.shop_cache_file == Path("shop_catalog.json")
     assert settings.database_file == Path("data/matoca.db")
     assert not hasattr(settings, "config_file")

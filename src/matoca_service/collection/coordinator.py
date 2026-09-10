@@ -68,6 +68,11 @@ class CollectionCoordinator:
         self._next_due: dict[str, datetime] = {}
         self._task: asyncio.Task[None] | None = None
 
+    def start(self) -> None:
+        if self._task is None:
+            self._stop_event.clear()
+            self._task = asyncio.create_task(self.run())
+
     async def run_once(self) -> None:
         now = self._now()
         tasks: list[asyncio.Task[None]] = []
