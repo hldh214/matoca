@@ -67,8 +67,7 @@ def _create_business_storage(connection: sqlite3.Connection) -> None:
             last_attempt_at TEXT,
             last_success_at TEXT,
             retry_at TEXT,
-            error_code TEXT,
-            failure_count INTEGER NOT NULL CHECK (failure_count >= 0)
+            error_code TEXT
         )
         """,
         """
@@ -86,7 +85,20 @@ def _create_business_storage(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
-MIGRATIONS: tuple[Migration, ...] = (_bootstrap_metadata, _create_business_storage)
+def _add_poll_failure_count(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        ALTER TABLE merchant_poll_state
+        ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0)
+        """
+    )
+
+
+MIGRATIONS: tuple[Migration, ...] = (
+    _bootstrap_metadata,
+    _create_business_storage,
+    _add_poll_failure_count,
+)
 
 
 def migrate(connection: sqlite3.Connection) -> None:

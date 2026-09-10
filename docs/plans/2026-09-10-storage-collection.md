@@ -307,6 +307,8 @@ git commit -m "feat: collect complete merchant snapshots"
 
 ### Task 4: Adaptive Poll Schedule and Backoff
 
+Migration: Task 4 adds migration version 3 for durable merchant poll backoff state.
+
 **Files:**
 - Create: `src/matoca_service/collection/schedule.py`
 - Create: `src/matoca_service/collection/coordinator.py`

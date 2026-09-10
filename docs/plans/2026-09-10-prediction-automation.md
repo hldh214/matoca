@@ -77,7 +77,7 @@ Run: `uv run pytest tests/unit/automation/test_repository.py -v`
 
 Expected: FAIL because automation models and repository do not exist.
 
-- [ ] **Step 3: Add migration version 3**
+- [ ] **Step 3: Add migration version 4**
 
 Create `automation_tasks`, `automation_events`, `queue_sessions`, `queue_session_observations`, `prediction_samples`, and `prediction_stats`. Use integer primary keys and UTC ISO-8601 text timestamps. Add indexes for nonterminal task state, merchant/shop observation history, and prediction hierarchy dimensions.
 

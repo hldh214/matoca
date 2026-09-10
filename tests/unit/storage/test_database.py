@@ -7,6 +7,8 @@ import pytest
 
 from matoca_service.storage.database import Database
 from matoca_service.storage.migrations import migrate
+from matoca_service.storage.models import MerchantPollState
+from matoca_service.storage.repositories import ShopRepository
 
 
 def test_initialize_creates_private_database_and_schema(tmp_path: Path) -> None:
@@ -18,7 +20,7 @@ def test_initialize_creates_private_database_and_schema(tmp_path: Path) -> None:
     assert stat.S_IMODE(database.path.stat().st_mode) == 0o600
     assert (
         database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 2
+        == 3
     )
 
 
@@ -81,7 +83,92 @@ def test_business_migration_rolls_back_schema_and_version_after_ddl_failure(tmp_
         connection.set_authorizer(None)
         migrate(connection)
 
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'shops'"
         ).fetchone() == ("shops",)
+
+
+def test_initialize_upgrades_exact_pre_fix_version_two_database(tmp_path: Path) -> None:
+    path = tmp_path / "data" / "matoca.db"
+    path.parent.mkdir()
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE database_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE shops (
+                merchant_key TEXT NOT NULL,
+                shop_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                sub_name TEXT,
+                address TEXT,
+                tel TEXT,
+                lat TEXT,
+                lng TEXT,
+                image_url TEXT,
+                forms_json TEXT,
+                options_json TEXT NOT NULL,
+                last_detail_at TEXT,
+                PRIMARY KEY (merchant_key, shop_id)
+            );
+            CREATE TABLE shop_observations (
+                merchant_key TEXT NOT NULL,
+                shop_id INTEGER NOT NULL,
+                observed_minute TEXT NOT NULL,
+                current_waiting INTEGER NOT NULL,
+                waiting_minutes INTEGER,
+                waiting_is_more INTEGER NOT NULL,
+                is_open INTEGER,
+                is_issuable INTEGER,
+                is_holiday INTEGER NOT NULL,
+                is_suspended INTEGER NOT NULL,
+                list_fresh INTEGER NOT NULL,
+                detail_fresh INTEGER NOT NULL,
+                error_code TEXT,
+                PRIMARY KEY (merchant_key, shop_id, observed_minute),
+                FOREIGN KEY (merchant_key, shop_id)
+                    REFERENCES shops (merchant_key, shop_id)
+            );
+            CREATE INDEX shop_observations_history
+            ON shop_observations (merchant_key, shop_id, observed_minute DESC);
+            CREATE TABLE merchant_poll_state (
+                merchant_key TEXT PRIMARY KEY,
+                last_attempt_at TEXT,
+                last_success_at TEXT,
+                retry_at TEXT,
+                error_code TEXT
+            );
+            CREATE TABLE preferences (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                default_adult_count INTEGER NOT NULL,
+                default_child_count INTEGER NOT NULL,
+                early_tolerance_minutes INTEGER NOT NULL,
+                model_error_minutes INTEGER NOT NULL
+            );
+            PRAGMA user_version = 2;
+            """
+        )
+
+    database = Database(path)
+    database.initialize()
+
+    assert (
+        database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
+        == 3
+    )
+    column = database.read(
+        lambda connection: connection.execute(
+            "SELECT dflt_value FROM pragma_table_info('merchant_poll_state') "
+            "WHERE name = 'failure_count'"
+        ).fetchone()
+    )
+    assert column == ("0",)
+
+    repository = ShopRepository(database)
+    assert repository.poll_state("sawayaka").failure_count == 0
+    state = MerchantPollState(merchant_key="sawayaka", failure_count=2)
+    repository.update_poll_state(state)
+    assert repository.poll_state("sawayaka") == state
