@@ -8,7 +8,9 @@ import httpx
 import pytest
 import respx
 
+from matoca_service.collection.models import CollectionCycle
 from matoca_service.line.models import LiffToken
+from matoca_service.matoca.client import MatocaApiError
 from matoca_service.matoca.models import Shop, ShopForms, Waiting
 from matoca_service.service import (
     DashboardData,
@@ -90,6 +92,150 @@ async def test_dashboard_serializes_token_state_operations() -> None:
     )
 
     assert service.max_active == 1
+
+
+class FakeCycleClient:
+    def __init__(
+        self,
+        base_shops: list[Shop],
+        details: dict[int, Shop],
+        *,
+        detail_error: Exception | None = None,
+    ) -> None:
+        self.base_shops = base_shops
+        self.details = details
+        self.detail_error = detail_error
+        self.events: list[str] = []
+        self.active_details = 0
+        self.max_active_details = 0
+
+    async def list_all_shops(self) -> list[Shop]:
+        self.events.append("list")
+        return self.base_shops
+
+    async def get_shop(self, shop_id: int) -> Shop:
+        assert self.events[0] == "list"
+        self.active_details += 1
+        self.max_active_details = max(self.max_active_details, self.active_details)
+        try:
+            await asyncio.sleep(0.01)
+            if self.detail_error is not None:
+                raise self.detail_error
+            return self.details[shop_id]
+        finally:
+            self.active_details -= 1
+
+    async def list_waiting(self) -> list[Waiting]:
+        self.events.append("waiting")
+        return [Waiting(id=42)]
+
+
+class CycleReadTestService(MatocaService):
+    def __init__(self, client: FakeCycleClient) -> None:
+        self._operation_lock = asyncio.Lock()
+        self.client = client
+
+    async def _authenticated_read(self, merchant_key: str, operation: Any) -> Any:
+        assert merchant_key == "sawayaka"
+        return await operation(self.client)
+
+
+@pytest.mark.asyncio
+async def test_read_collection_cycle_enriches_list_shops_with_at_most_four_details() -> None:
+    base_shops = [
+        Shop(
+            id=shop_id,
+            name=f"List {shop_id}",
+            address=f"Address {shop_id}",
+            current_waiting=shop_id,
+        )
+        for shop_id in range(1, 7)
+    ]
+    details = {
+        shop_id: Shop(
+            id=shop_id,
+            name=f"Detail {shop_id}",
+            current_waiting=999,
+            is_open=True,
+            is_issuable=True,
+        )
+        for shop_id in range(1, 7)
+    }
+    service = CycleReadTestService(FakeCycleClient(base_shops, details))
+
+    cycle = await service.read_collection_cycle("sawayaka")
+
+    assert isinstance(cycle, CollectionCycle)
+    assert [item.shop.id for item in cycle.shops] == [1, 2, 3, 4, 5, 6]
+    assert [item.shop.name for item in cycle.shops] == [
+        f"List {shop_id}" for shop_id in range(1, 7)
+    ]
+    assert [item.shop.current_waiting for item in cycle.shops] == [1, 2, 3, 4, 5, 6]
+    assert all(item.detail_fresh for item in cycle.shops)
+    assert cycle.waiting == [Waiting(id=42)]
+    assert service.client.max_active_details == 4
+
+
+@pytest.mark.asyncio
+async def test_read_collection_cycle_marks_failed_detail_unobserved_and_keeps_list_waiting(
+) -> None:
+    base_shop = Shop(
+        id=1,
+        name="List 1",
+        current_waiting=10,
+        waiting_time={"minutes": 20},
+        is_open=True,
+        is_issuable=True,
+        forms=ShopForms(min_adult=1, max_adult=4),
+    )
+    service = CycleReadTestService(
+        FakeCycleClient([base_shop], {}, detail_error=httpx.ReadTimeout("timeout"))
+    )
+
+    cycle = await service.read_collection_cycle("sawayaka")
+
+    item = cycle.shops[0]
+    assert item.shop.current_waiting == 10
+    assert item.shop.waiting_time is None
+    assert item.shop.is_open is False
+    assert item.shop.is_issuable is False
+    assert item.shop.forms is None
+    assert item.detail_fresh is False
+    assert item.error_code == "timeout"
+
+
+def status_error(status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://example.test/shops/1")
+    response = httpx.Response(status_code, request=request)
+    return httpx.HTTPStatusError("status", request=request, response=response)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("detail_error", "expected_code"),
+    [
+        (httpx.ConnectError("offline"), "transport"),
+        (MatocaApiError("malformed upstream response"), "malformed_response"),
+        (status_error(429), "rate_limited"),
+        (status_error(500), "http_500"),
+    ],
+)
+async def test_read_collection_cycle_classifies_non_auth_detail_errors(
+    detail_error: Exception,
+    expected_code: str,
+) -> None:
+    service = CycleReadTestService(
+        FakeCycleClient(
+            [Shop(id=1, name="List 1", current_waiting=10)],
+            {},
+            detail_error=detail_error,
+        )
+    )
+
+    cycle = await service.read_collection_cycle("sawayaka")
+
+    assert cycle.shops[0].detail_fresh is False
+    assert cycle.shops[0].error_code == expected_code
 
 
 @pytest.mark.asyncio

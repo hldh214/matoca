@@ -8,16 +8,29 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from matoca_service.catalog import CatalogState, MerchantCatalog, ShopCatalogStore
+from matoca_service.collection.models import CollectedShop, CollectionCycle
 from matoca_service.config import LineConfig, MerchantConfig, MerchantRegistry
 from matoca_service.line.liff import LiffClient
 from matoca_service.line.refresh import LineRefreshClient
 from matoca_service.line.token_manager import TokenManager
 from matoca_service.matoca.client import MatocaApiError, MatocaClient
-from matoca_service.matoca.models import CreateWaitingRequest, Shop, Waiting
+from matoca_service.matoca.models import CreateWaitingRequest, Shop, ShopOptions, Waiting
 from matoca_service.state.store import JsonStateStore
 
 T = TypeVar("T")
 SNAPSHOT_TTL = timedelta(seconds=60)
+_LIST_IDENTITY_FIELDS = (
+    "id",
+    "name",
+    "sub_name",
+    "address",
+    "tel",
+    "lat",
+    "lng",
+    "image_url",
+    "distance",
+    "current_waiting",
+)
 
 
 class UnknownMerchantError(LookupError):
@@ -26,6 +39,40 @@ class UnknownMerchantError(LookupError):
 
 class QueueUnavailableError(RuntimeError):
     pass
+
+
+def _merge_list_shop(base_shop: Shop, detail_shop: Shop) -> Shop:
+    return detail_shop.model_copy(
+        update={field: getattr(base_shop, field) for field in _LIST_IDENTITY_FIELDS}
+    )
+
+
+def _without_detail(base_shop: Shop) -> Shop:
+    return base_shop.model_copy(
+        update={
+            "forms": None,
+            "options": ShopOptions(),
+            "waiting_time": None,
+            "is_issuable": False,
+            "is_open": False,
+            "is_issuable_area": False,
+            "next_reception_time": None,
+            "ticketing_button_text": None,
+        }
+    )
+
+
+def _detail_error_code(error: Exception) -> str:
+    if isinstance(error, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(error, httpx.RequestError):
+        return "transport"
+    if isinstance(error, MatocaApiError | ValueError):
+        return "malformed_response"
+    if isinstance(error, httpx.HTTPStatusError):
+        status_code = error.response.status_code
+        return "rate_limited" if status_code == 429 else f"http_{status_code}"
+    raise TypeError(f"unsupported detail error: {type(error).__name__}")
 
 
 class DashboardData(BaseModel):
@@ -251,6 +298,60 @@ class MatocaService:
                 merchant_key,
                 lambda client: client.list_waiting(),
             )
+
+    async def read_collection_cycle(self, merchant_key: str) -> CollectionCycle:
+        async with self._operation_lock:
+            observed_at = datetime.now(tz=UTC)
+
+            async def fetch(client: MatocaClient) -> CollectionCycle:
+                base_shops = await client.list_all_shops()
+                semaphore = asyncio.Semaphore(4)
+
+                async def detail(base_shop: Shop) -> CollectedShop:
+                    async with semaphore:
+                        try:
+                            detail_shop = await client.get_shop(base_shop.id)
+                        except httpx.HTTPStatusError as error:
+                            if error.response.status_code in {401, 403}:
+                                raise
+                            return CollectedShop(
+                                shop=_without_detail(base_shop),
+                                list_fresh=True,
+                                detail_fresh=False,
+                                error_code=_detail_error_code(error),
+                            )
+                        except httpx.TimeoutException as error:
+                            return CollectedShop(
+                                shop=_without_detail(base_shop),
+                                list_fresh=True,
+                                detail_fresh=False,
+                                error_code=_detail_error_code(error),
+                            )
+                        except (httpx.RequestError, MatocaApiError, ValueError) as error:
+                            return CollectedShop(
+                                shop=_without_detail(base_shop),
+                                list_fresh=True,
+                                detail_fresh=False,
+                                error_code=_detail_error_code(error),
+                            )
+                        return CollectedShop(
+                            shop=_merge_list_shop(base_shop, detail_shop),
+                            list_fresh=True,
+                            detail_fresh=True,
+                        )
+
+                shops, waiting = await asyncio.gather(
+                    asyncio.gather(*(detail(shop) for shop in base_shops)),
+                    client.list_waiting(),
+                )
+                return CollectionCycle(
+                    merchant_key=merchant_key,
+                    observed_at=observed_at,
+                    shops=list(shops),
+                    waiting=waiting,
+                )
+
+            return await self._authenticated_read(merchant_key, fetch)
 
     async def create_waiting(self, merchant_key: str, submission: QueueSubmission) -> Waiting:
         async with self._operation_lock:
