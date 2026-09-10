@@ -187,7 +187,23 @@ Web interface:
 - FastAPI and Uvicorn with one worker.
 - Jinja2 server-rendered HTML.
 
-The single-user, single-instance runtime creates its local SQLite database automatically.
+The single-user, single-instance runtime requires a local SQLite database and creates it
+automatically at the configured database path.
+
+## SQLite Storage and Collection
+
+`MATOCA_DATABASE_FILE` selects the SQLite database file and defaults to
+`./data/matoca.db`. The ignored `data/` directory is created with mode `0700`; the
+database and its SQLite WAL/SHM sidecars are enforced as mode `0600`.
+
+The collection coordinator makes read-only merchant requests adaptively: it polls a
+merchant without history every five minutes, polls during its learned operating window
+every minute, and polls outside that window every 15 minutes. It never overlaps requests
+for the same merchant and honors merchant-specific rate-limit backoff.
+
+Raw minute observations remain in SQLite for 180 days. Daily maintenance converts older
+fresh observations into five-minute waiting-group and waiting-time aggregates before
+deleting the corresponding raw rows.
 
 ## Repository-Local Configuration
 
@@ -263,8 +279,8 @@ protocol_version = "1"
 user_agent = "Line/26.11.0"
 ```
 
-The built-in merchant registry is part of the project source. SQLite data is stored in
-`data/matoca.db` and is never committed.
+Merchant definitions remain tracked in `src/matoca_service/merchant_registry.toml` as part
+of the project source. SQLite data is stored in `data/matoca.db` and is never committed.
 
 ### `state.json`
 

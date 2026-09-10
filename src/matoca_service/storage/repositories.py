@@ -9,7 +9,9 @@ from matoca_service.storage.database import Database
 from matoca_service.storage.models import (
     CollectionWrite,
     MerchantPollState,
+    ObservationRollup,
     PollWindow,
+    RetentionResult,
     ShopObservation,
     StoredShop,
     UserPreferences,
@@ -32,6 +34,14 @@ class ShopRepository:
         return self._database.read(
             lambda connection: self._observations(connection, merchant_key, shop_id, limit)
         )
+
+    def rollups(self, merchant_key: str, shop_id: int) -> list[ObservationRollup]:
+        return self._database.read(
+            lambda connection: self._rollups(connection, merchant_key, shop_id)
+        )
+
+    def rollup_and_prune(self, now: datetime) -> RetentionResult:
+        return self._database.write(lambda connection: self._rollup_and_prune(connection, now))
 
     def poll_window(self, merchant_key: str, now: datetime) -> PollWindow | None:
         return self._database.read(
@@ -164,6 +174,168 @@ class ShopRepository:
             (merchant_key, shop_id, limit),
         ).fetchall()
         return [self._observation_from_row(row) for row in rows]
+
+    def _rollups(
+        self,
+        connection: sqlite3.Connection,
+        merchant_key: str,
+        shop_id: int,
+    ) -> list[ObservationRollup]:
+        rows = connection.execute(
+            """
+            SELECT merchant_key, shop_id, observed_5_minute, sample_count,
+                   minimum_waiting, maximum_waiting, average_waiting,
+                   waiting_minutes_sample_count, minimum_waiting_minutes,
+                   maximum_waiting_minutes, average_waiting_minutes
+            FROM shop_observation_rollups_5m
+            WHERE merchant_key = ? AND shop_id = ?
+            ORDER BY observed_5_minute DESC
+            """,
+            (merchant_key, shop_id),
+        ).fetchall()
+        return [
+            ObservationRollup(
+                merchant_key=str(row[0]),
+                shop_id=int(cast(int | str, row[1])),
+                observed_at=_parse_datetime(str(row[2])),
+                sample_count=int(cast(int | str, row[3])),
+                minimum_waiting=_optional_int(row[4]),
+                maximum_waiting=_optional_int(row[5]),
+                average_waiting=float(row[6]) if row[6] is not None else None,
+                waiting_minutes_sample_count=int(cast(int | str, row[7])),
+                minimum_waiting_minutes=_optional_int(row[8]),
+                maximum_waiting_minutes=_optional_int(row[9]),
+                average_waiting_minutes=float(row[10]) if row[10] is not None else None,
+            )
+            for row in rows
+        ]
+
+    def _rollup_and_prune(
+        self,
+        connection: sqlite3.Connection,
+        now: datetime,
+    ) -> RetentionResult:
+        local_day = _as_utc(now).astimezone(TOKYO).date().isoformat()
+        completed_day = connection.execute(
+            "SELECT value FROM database_metadata WHERE key = 'shop_observation_retention_day'"
+        ).fetchone()
+        if completed_day == (local_day,):
+            return RetentionResult(raw_deleted=0)
+
+        cutoff = _serialize_datetime(_as_utc(now) - timedelta(days=180))
+        connection.execute(
+            """
+            WITH raw_rollups AS (
+                SELECT
+                    merchant_key,
+                    shop_id,
+                    strftime(
+                        '%Y-%m-%dT%H:%M:00+00:00',
+                        unixepoch(observed_minute) - unixepoch(observed_minute) % 300,
+                        'unixepoch'
+                    ) AS observed_5_minute,
+                    SUM(CASE WHEN list_fresh = 1 THEN 1 ELSE 0 END) AS sample_count,
+                    MIN(CASE WHEN list_fresh = 1 THEN current_waiting END) AS minimum_waiting,
+                    MAX(CASE WHEN list_fresh = 1 THEN current_waiting END) AS maximum_waiting,
+                    AVG(CASE WHEN list_fresh = 1 THEN current_waiting END) AS average_waiting,
+                    SUM(
+                        CASE WHEN detail_fresh = 1 AND waiting_minutes IS NOT NULL THEN 1 ELSE 0 END
+                    ) AS waiting_minutes_sample_count,
+                    MIN(
+                        CASE WHEN detail_fresh = 1 THEN waiting_minutes END
+                    ) AS minimum_waiting_minutes,
+                    MAX(
+                        CASE WHEN detail_fresh = 1 THEN waiting_minutes END
+                    ) AS maximum_waiting_minutes,
+                    AVG(
+                        CASE WHEN detail_fresh = 1 THEN waiting_minutes END
+                    ) AS average_waiting_minutes
+                FROM shop_observations
+                WHERE observed_minute < ?
+                GROUP BY merchant_key, shop_id, observed_5_minute
+                HAVING
+                    SUM(CASE WHEN list_fresh = 1 THEN 1 ELSE 0 END) > 0
+                    OR SUM(
+                        CASE WHEN detail_fresh = 1 AND waiting_minutes IS NOT NULL THEN 1 ELSE 0 END
+                    ) > 0
+            )
+            INSERT INTO shop_observation_rollups_5m (
+                merchant_key, shop_id, observed_5_minute, sample_count,
+                minimum_waiting, maximum_waiting, average_waiting,
+                waiting_minutes_sample_count, minimum_waiting_minutes,
+                maximum_waiting_minutes, average_waiting_minutes
+            )
+            SELECT
+                merchant_key, shop_id, observed_5_minute, sample_count,
+                minimum_waiting, maximum_waiting, average_waiting,
+                waiting_minutes_sample_count, minimum_waiting_minutes,
+                maximum_waiting_minutes, average_waiting_minutes
+            FROM raw_rollups
+            WHERE 1
+            ON CONFLICT (merchant_key, shop_id, observed_5_minute) DO UPDATE SET
+                sample_count = shop_observation_rollups_5m.sample_count + excluded.sample_count,
+                minimum_waiting = CASE
+                    WHEN shop_observation_rollups_5m.sample_count = 0 THEN excluded.minimum_waiting
+                    WHEN excluded.sample_count = 0 THEN shop_observation_rollups_5m.minimum_waiting
+                    ELSE MIN(shop_observation_rollups_5m.minimum_waiting, excluded.minimum_waiting)
+                END,
+                maximum_waiting = CASE
+                    WHEN shop_observation_rollups_5m.sample_count = 0 THEN excluded.maximum_waiting
+                    WHEN excluded.sample_count = 0 THEN shop_observation_rollups_5m.maximum_waiting
+                    ELSE MAX(shop_observation_rollups_5m.maximum_waiting, excluded.maximum_waiting)
+                END,
+                average_waiting = (
+                    shop_observation_rollups_5m.average_waiting
+                    * shop_observation_rollups_5m.sample_count
+                    + excluded.average_waiting * excluded.sample_count
+                ) / (shop_observation_rollups_5m.sample_count + excluded.sample_count),
+                waiting_minutes_sample_count = (
+                    shop_observation_rollups_5m.waiting_minutes_sample_count
+                    + excluded.waiting_minutes_sample_count
+                ),
+                minimum_waiting_minutes = CASE
+                    WHEN shop_observation_rollups_5m.waiting_minutes_sample_count = 0
+                        THEN excluded.minimum_waiting_minutes
+                    WHEN excluded.waiting_minutes_sample_count = 0
+                        THEN shop_observation_rollups_5m.minimum_waiting_minutes
+                    ELSE MIN(
+                        shop_observation_rollups_5m.minimum_waiting_minutes,
+                        excluded.minimum_waiting_minutes
+                    )
+                END,
+                maximum_waiting_minutes = CASE
+                    WHEN shop_observation_rollups_5m.waiting_minutes_sample_count = 0
+                        THEN excluded.maximum_waiting_minutes
+                    WHEN excluded.waiting_minutes_sample_count = 0
+                        THEN shop_observation_rollups_5m.maximum_waiting_minutes
+                    ELSE MAX(
+                        shop_observation_rollups_5m.maximum_waiting_minutes,
+                        excluded.maximum_waiting_minutes
+                    )
+                END,
+                average_waiting_minutes = (
+                    shop_observation_rollups_5m.average_waiting_minutes
+                    * shop_observation_rollups_5m.waiting_minutes_sample_count
+                    + excluded.average_waiting_minutes * excluded.waiting_minutes_sample_count
+                ) / (
+                    shop_observation_rollups_5m.waiting_minutes_sample_count
+                    + excluded.waiting_minutes_sample_count
+                )
+            """,
+            (cutoff,),
+        )
+        raw_deleted = connection.execute(
+            "DELETE FROM shop_observations WHERE observed_minute < ?", (cutoff,)
+        ).rowcount
+        connection.execute(
+            """
+            INSERT INTO database_metadata (key, value)
+            VALUES ('shop_observation_retention_day', ?)
+            ON CONFLICT (key) DO UPDATE SET value = excluded.value
+            """,
+            (local_day,),
+        )
+        return RetentionResult(raw_deleted=raw_deleted)
 
     def _poll_window(
         self,
@@ -387,3 +559,7 @@ def _time_from_minute(value: int) -> time:
 
 def _optional_string(value: object) -> str | None:
     return str(value) if value is not None else None
+
+
+def _optional_int(value: object) -> int | None:
+    return int(cast(int | str, value)) if value is not None else None

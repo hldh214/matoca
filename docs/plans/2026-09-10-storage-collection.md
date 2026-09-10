@@ -494,13 +494,19 @@ git commit -m "feat: serve cached merchant snapshots"
 
 **Files:**
 - Modify: `src/matoca_service/storage/repositories.py`
+- Modify: `src/matoca_service/storage/migrations.py`
+- Modify: `src/matoca_service/storage/models.py`
 - Modify: `src/matoca_service/collection/coordinator.py`
 - Modify: `README.md`
 - Test: `tests/unit/storage/test_retention.py`
+- Modify: `tests/unit/storage/test_database.py`
 
 **Interfaces:**
 - Produces: `ShopRepository.rollup_and_prune(now: datetime) -> RetentionResult`.
-- Consumes: migration-2 observation and rollup tables.
+- Consumes: migration-2 observations and the migration-4 rollup table.
+
+Migration: Task 6 adds migration version 4 for retention rollups. The unimplemented
+prediction and Web Push migrations are reserved as versions 5 and 6.
 
 - [ ] **Step 1: Write a failing transactional retention test**
 

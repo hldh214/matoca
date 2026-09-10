@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from matoca_service.storage.database import Database
-from matoca_service.storage.migrations import migrate
+from matoca_service.storage.migrations import MIGRATIONS, migrate
 from matoca_service.storage.models import MerchantPollState
 from matoca_service.storage.repositories import ShopRepository
 
@@ -20,7 +20,7 @@ def test_initialize_creates_private_database_and_schema(tmp_path: Path) -> None:
     assert stat.S_IMODE(database.path.stat().st_mode) == 0o600
     assert (
         database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 3
+        == 4
     )
 
 
@@ -83,7 +83,7 @@ def test_business_migration_rolls_back_schema_and_version_after_ddl_failure(tmp_
         connection.set_authorizer(None)
         migrate(connection)
 
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'shops'"
         ).fetchone() == ("shops",)
@@ -157,7 +157,7 @@ def test_initialize_upgrades_exact_pre_fix_version_two_database(tmp_path: Path) 
 
     assert (
         database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 3
+        == 4
     )
     column = database.read(
         lambda connection: connection.execute(
@@ -172,3 +172,26 @@ def test_initialize_upgrades_exact_pre_fix_version_two_database(tmp_path: Path) 
     state = MerchantPollState(merchant_key="sawayaka", failure_count=2)
     repository.update_poll_state(state)
     assert repository.poll_state("sawayaka") == state
+
+
+def test_initialize_upgrades_exact_version_three_database(tmp_path: Path) -> None:
+    path = tmp_path / "data" / "matoca.db"
+    path.parent.mkdir()
+    with sqlite3.connect(path) as connection:
+        for migration in MIGRATIONS[:3]:
+            migration(connection)
+        connection.execute("PRAGMA user_version = 3")
+
+    database = Database(path)
+    database.initialize()
+
+    assert (
+        database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
+        == 4
+    )
+    assert database.read(
+        lambda connection: connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'shop_observation_rollups_5m'"
+        ).fetchone()
+    ) == ("shop_observation_rollups_5m",)

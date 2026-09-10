@@ -94,10 +94,40 @@ def _add_poll_failure_count(connection: sqlite3.Connection) -> None:
     )
 
 
+def _create_observation_rollups(connection: sqlite3.Connection) -> None:
+    statements = (
+        """
+        CREATE TABLE shop_observation_rollups_5m (
+            merchant_key TEXT NOT NULL,
+            shop_id INTEGER NOT NULL,
+            observed_5_minute TEXT NOT NULL,
+            sample_count INTEGER NOT NULL,
+            minimum_waiting INTEGER,
+            maximum_waiting INTEGER,
+            average_waiting REAL,
+            waiting_minutes_sample_count INTEGER NOT NULL,
+            minimum_waiting_minutes INTEGER,
+            maximum_waiting_minutes INTEGER,
+            average_waiting_minutes REAL,
+            PRIMARY KEY (merchant_key, shop_id, observed_5_minute),
+            FOREIGN KEY (merchant_key, shop_id)
+                REFERENCES shops (merchant_key, shop_id)
+        )
+        """,
+        """
+        CREATE INDEX shop_observation_rollups_history
+        ON shop_observation_rollups_5m (merchant_key, shop_id, observed_5_minute DESC)
+        """,
+    )
+    for statement in statements:
+        connection.execute(statement)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _bootstrap_metadata,
     _create_business_storage,
     _add_poll_failure_count,
+    _create_observation_rollups,
 )
 
 

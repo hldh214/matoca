@@ -17,6 +17,7 @@ class MemoryRepository:
     def __init__(self, window: PollWindow | None = None) -> None:
         self.window = window
         self.states: dict[str, MerchantPollState] = {}
+        self.maintenance_calls: list[datetime] = []
 
     def poll_window(self, merchant_key: str, now: datetime) -> PollWindow | None:
         return self.window
@@ -27,6 +28,9 @@ class MemoryRepository:
     def update_poll_state(self, state: MerchantPollState) -> MerchantPollState:
         self.states[state.merchant_key] = state
         return state
+
+    def rollup_and_prune(self, now: datetime) -> None:
+        self.maintenance_calls.append(now)
 
 
 class BlockingCollector:
@@ -118,6 +122,25 @@ async def test_run_once_does_not_start_second_cycle_for_busy_merchant() -> None:
     assert collector.calls == ["sawayaka"]
     collector.release.set()
     await first
+
+
+@pytest.mark.asyncio
+async def test_run_once_runs_retention_once_per_tokyo_day() -> None:
+    repository = MemoryRepository()
+    collector = SuccessfulCollector()
+    current = NOW
+
+    def now() -> datetime:
+        return current
+
+    coordinator = coordinator_for(collector, repository, now)
+    await coordinator.run_once()
+    current += timedelta(minutes=5)
+    await coordinator.run_once()
+    current += timedelta(days=1)
+    await coordinator.run_once()
+
+    assert repository.maintenance_calls == [NOW, NOW + timedelta(days=1, minutes=5)]
 
 
 @pytest.mark.asyncio

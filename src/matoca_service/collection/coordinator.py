@@ -2,9 +2,10 @@ import asyncio
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -20,6 +21,7 @@ BACKOFF_INTERVALS = (
     timedelta(minutes=8),
     timedelta(minutes=15),
 )
+TOKYO = ZoneInfo("Asia/Tokyo")
 
 
 def _utc_now() -> datetime:
@@ -38,6 +40,8 @@ class PollStateRepository(Protocol):
     def poll_state(self, merchant_key: str) -> MerchantPollState: ...
 
     def update_poll_state(self, state: MerchantPollState) -> MerchantPollState: ...
+
+    def rollup_and_prune(self, now: datetime) -> object: ...
 
 
 class CollectionRateLimited(RuntimeError):
@@ -67,6 +71,7 @@ class CollectionCoordinator:
         self._in_flight: dict[str, asyncio.Task[None]] = {}
         self._next_due: dict[str, datetime] = {}
         self._task: asyncio.Task[None] | None = None
+        self._last_maintenance_day: date | None = None
 
     def start(self) -> None:
         if self._task is None:
@@ -75,6 +80,7 @@ class CollectionCoordinator:
 
     async def run_once(self) -> None:
         now = self._now()
+        self._run_maintenance_if_due(now)
         tasks: list[asyncio.Task[None]] = []
         for merchant_key in self._registry.merchants:
             if not self._is_due(merchant_key, now) or merchant_key in self._in_flight:
@@ -149,6 +155,13 @@ class CollectionCoordinator:
             return False
         due_at = self._next_due.get(merchant_key)
         return due_at is None or due_at <= now
+
+    def _run_maintenance_if_due(self, now: datetime) -> None:
+        local_day = now.astimezone(TOKYO).date()
+        if self._last_maintenance_day == local_day:
+            return
+        self._repository.rollup_and_prune(now)
+        self._last_maintenance_day = local_day
 
     async def _wait_until_next_due(self) -> None:
         now = self._now()

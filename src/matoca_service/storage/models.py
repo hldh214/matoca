@@ -89,3 +89,23 @@ class PollWindow:
     start: time
     end: time
     crosses_midnight: bool = False
+
+
+@dataclass(frozen=True)
+class RetentionResult:
+    raw_deleted: int
+
+
+@dataclass(frozen=True)
+class ObservationRollup:
+    merchant_key: str
+    shop_id: int
+    observed_at: datetime
+    sample_count: int
+    minimum_waiting: int | None
+    maximum_waiting: int | None
+    average_waiting: float | None
+    waiting_minutes_sample_count: int
+    minimum_waiting_minutes: int | None
+    maximum_waiting_minutes: int | None
+    average_waiting_minutes: float | None
