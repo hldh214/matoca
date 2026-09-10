@@ -16,7 +16,7 @@ def _bootstrap_metadata(connection: sqlite3.Connection) -> None:
 
 
 def _create_business_storage(connection: sqlite3.Connection) -> None:
-    connection.executescript(
+    statements = (
         """
         CREATE TABLE shops (
             merchant_key TEXT NOT NULL,
@@ -32,7 +32,9 @@ def _create_business_storage(connection: sqlite3.Connection) -> None:
             options_json TEXT NOT NULL,
             last_detail_at TEXT,
             PRIMARY KEY (merchant_key, shop_id)
-        );
+        )
+        """,
+        """
 
         CREATE TABLE shop_observations (
             merchant_key TEXT NOT NULL,
@@ -51,10 +53,14 @@ def _create_business_storage(connection: sqlite3.Connection) -> None:
             PRIMARY KEY (merchant_key, shop_id, observed_minute),
             FOREIGN KEY (merchant_key, shop_id)
                 REFERENCES shops (merchant_key, shop_id)
-        );
+        )
+        """,
+        """
 
         CREATE INDEX shop_observations_history
-        ON shop_observations (merchant_key, shop_id, observed_minute DESC);
+        ON shop_observations (merchant_key, shop_id, observed_minute DESC)
+        """,
+        """
 
         CREATE TABLE merchant_poll_state (
             merchant_key TEXT PRIMARY KEY,
@@ -62,7 +68,9 @@ def _create_business_storage(connection: sqlite3.Connection) -> None:
             last_success_at TEXT,
             retry_at TEXT,
             error_code TEXT
-        );
+        )
+        """,
+        """
 
         CREATE TABLE preferences (
             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -70,9 +78,11 @@ def _create_business_storage(connection: sqlite3.Connection) -> None:
             default_child_count INTEGER NOT NULL,
             early_tolerance_minutes INTEGER NOT NULL,
             model_error_minutes INTEGER NOT NULL
-        );
-        """
+        )
+        """,
     )
+    for statement in statements:
+        connection.execute(statement)
 
 
 MIGRATIONS: tuple[Migration, ...] = (_bootstrap_metadata, _create_business_storage)
@@ -84,6 +94,12 @@ def migrate(connection: sqlite3.Connection) -> None:
     for version, migration in enumerate(MIGRATIONS, start=1):
         if version <= current_version:
             continue
-        with connection:
+        connection.execute("BEGIN")
+        try:
             migration(connection)
             connection.execute(f"PRAGMA user_version = {version}")
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+        else:
+            connection.execute("COMMIT")

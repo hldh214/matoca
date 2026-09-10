@@ -1,7 +1,8 @@
 import json
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import cast
+from zoneinfo import ZoneInfo
 
 from matoca_service.matoca.models import Shop, ShopForms, ShopOptions, WaitingEstimate
 from matoca_service.storage.database import Database
@@ -13,6 +14,8 @@ from matoca_service.storage.models import (
     StoredShop,
     UserPreferences,
 )
+
+TOKYO = ZoneInfo("Asia/Tokyo")
 
 
 class ShopRepository:
@@ -168,27 +171,35 @@ class ShopRepository:
         merchant_key: str,
         now: datetime,
     ) -> PollWindow | None:
-        now_utc = _as_utc(now)
-        earliest = _serialize_datetime(now_utc - timedelta(days=30))
+        local_now = _as_utc(now).astimezone(TOKYO)
+        first_day = local_now.date() - timedelta(days=29)
+        first_minute = datetime.combine(first_day, time.min, tzinfo=TOKYO)
+        next_day = datetime.combine(local_now.date() + timedelta(days=1), time.min, tzinfo=TOKYO)
         rows = connection.execute(
             """
             SELECT observed_minute
             FROM shop_observations
-            WHERE merchant_key = ? AND observed_minute >= ? AND detail_fresh = 1 AND is_open = 1
-            ORDER BY observed_minute
+            WHERE merchant_key = ? AND observed_minute >= ? AND observed_minute < ?
+              AND detail_fresh = 1 AND is_open = 1
             """,
-            (merchant_key, earliest),
+            (
+                merchant_key,
+                _serialize_datetime(first_minute),
+                _serialize_datetime(next_day),
+            ),
         ).fetchall()
         if not rows:
             return None
 
-        timezone = now.tzinfo or UTC
-        start = _parse_datetime(rows[0][0]).astimezone(timezone) - timedelta(minutes=30)
-        end = _parse_datetime(rows[-1][0]).astimezone(timezone) + timedelta(minutes=30)
+        local_minutes = [
+            _minute_of_day(_parse_datetime(str(row[0])).astimezone(TOKYO)) for row in rows
+        ]
+        start_minute = min(local_minutes) - 30
+        end_minute = max(local_minutes) + 30
         return PollWindow(
-            start=start.timetz().replace(tzinfo=None),
-            end=end.timetz().replace(tzinfo=None),
-            crosses_midnight=start.date() != end.date() and start.time() > end.time(),
+            start=_time_from_minute(start_minute),
+            end=_time_from_minute(end_minute),
+            crosses_midnight=start_minute < 0 or end_minute >= 24 * 60,
         )
 
     def _poll_state(self, connection: sqlite3.Connection, merchant_key: str) -> MerchantPollState:
@@ -359,6 +370,15 @@ def _parse_optional_datetime(value: object) -> datetime | None:
 
 def _sqlite_bool(value: bool | None) -> int | None:
     return int(value) if value is not None else None
+
+
+def _minute_of_day(value: datetime) -> int:
+    return value.hour * 60 + value.minute
+
+
+def _time_from_minute(value: int) -> time:
+    hour, minute = divmod(value % (24 * 60), 60)
+    return time(hour, minute)
 
 
 def _optional_string(value: object) -> str | None:

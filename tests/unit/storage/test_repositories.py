@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -7,6 +8,8 @@ from matoca_service.matoca.models import Shop, WaitingEstimate
 from matoca_service.storage.database import Database
 from matoca_service.storage.models import CollectionWrite, ShopObservation, UserPreferences
 from matoca_service.storage.repositories import PreferenceRepository, ShopRepository
+
+TOKYO = ZoneInfo("Asia/Tokyo")
 
 
 @pytest.fixture
@@ -120,8 +123,35 @@ def test_poll_window_uses_fresh_open_observations_from_preceding_thirty_days(
     window = repository.poll_window("sawayaka", now)
 
     assert window is not None
-    assert window.start == (now - timedelta(days=1, hours=2, minutes=30)).time()
-    assert window.end == (now - timedelta(days=1, hours=1, minutes=30)).time()
+    assert window.start == (now - timedelta(days=1, hours=2, minutes=30)).astimezone(TOKYO).time()
+    assert window.end == (now - timedelta(days=1, hours=1, minutes=30)).astimezone(TOKYO).time()
+
+
+def test_poll_window_uses_the_local_time_range_not_observation_date_order(
+    database: Database,
+) -> None:
+    repository = ShopRepository(database)
+    repository.save_cycle(
+        CollectionWrite(
+            merchant_key="sawayaka",
+            observed_at=datetime(2026, 9, 1, 18, tzinfo=TOKYO),
+            shops=[observation_shop(waiting_minutes=25, detail_fresh=True)],
+        )
+    )
+    repository.save_cycle(
+        CollectionWrite(
+            merchant_key="sawayaka",
+            observed_at=datetime(2026, 9, 9, 10, tzinfo=TOKYO),
+            shops=[observation_shop(waiting_minutes=25, detail_fresh=True)],
+        )
+    )
+
+    window = repository.poll_window("sawayaka", datetime(2026, 9, 10, 12, tzinfo=UTC))
+
+    assert window is not None
+    assert window.start.isoformat() == "09:30:00"
+    assert window.end.isoformat() == "18:30:00"
+    assert window.crosses_midnight is False
 
 
 def test_preferences_default_to_two_adults_and_fifteen_minute_budgets(database: Database) -> None:
