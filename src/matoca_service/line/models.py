@@ -1,5 +1,11 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+
+
+@dataclass(frozen=True, slots=True)
+class NativeTokenPair:
+    access_token: str = field(repr=False)
+    refresh_token: str = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
