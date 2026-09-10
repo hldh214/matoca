@@ -187,13 +187,61 @@ class RetryRaceClient:
         return []
 
 
+class SimultaneousAuthRetryClient(RetryRaceClient):
+    async def get_shop(self, shop_id: int) -> Shop:
+        self.active_details += 1
+        self.max_active_details = max(self.max_active_details, self.active_details)
+        try:
+            if self.attempt == 1:
+                self.first_attempt_details += 1
+                if self.first_attempt_details == 4:
+                    self.first_attempt_ready.set()
+                try:
+                    await self.first_attempt_ready.wait()
+                    raise status_error(401 if shop_id % 2 else 403)
+                finally:
+                    self.first_attempt_details -= 1
+            elif self.first_attempt_details:
+                self.retry_started_before_drain = True
+            return Shop(id=shop_id, name=f"Detail {shop_id}", is_open=True, is_issuable=True)
+        finally:
+            self.active_details -= 1
+
+
+class PrimaryWaitingFailureClient(SimultaneousAuthRetryClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.waiting_failed = asyncio.Event()
+
+    async def get_shop(self, shop_id: int) -> Shop:
+        self.active_details += 1
+        self.max_active_details = max(self.max_active_details, self.active_details)
+        try:
+            self.first_attempt_details += 1
+            if self.first_attempt_details == 4:
+                self.first_attempt_ready.set()
+            try:
+                await self.first_attempt_ready.wait()
+                await self.waiting_failed.wait()
+                raise status_error(401 if shop_id % 2 else 403)
+            finally:
+                self.first_attempt_details -= 1
+        finally:
+            self.active_details -= 1
+
+    async def list_waiting(self) -> list[Waiting]:
+        await self.first_attempt_ready.wait()
+        self.waiting_failed.set()
+        raise status_error(500)
+
+
 class RetryingCycleReadTestService(CycleReadTestService):
     async def _authenticated_read(self, merchant_key: str, operation: Any) -> Any:
         assert merchant_key == "sawayaka"
         try:
             return await operation(self.client)
         except httpx.HTTPStatusError as error:
-            assert error.response.status_code == 401
+            assert error.response.status_code in {401, 403}
             return await operation(self.client)
 
 
@@ -247,6 +295,37 @@ async def test_read_collection_cycle_drains_first_attempt_before_unauthorized_re
     assert client.first_attempt_details == 0
     assert client.waiting_cancelled is True
     assert client.retry_started_before_drain is False
+    assert client.max_active_details <= 4
+
+
+@pytest.mark.asyncio
+async def test_read_collection_cycle_retries_after_simultaneous_detail_auth_failures() -> None:
+    client = SimultaneousAuthRetryClient()
+    service = RetryingCycleReadTestService(client)
+
+    try:
+        cycle = await service.read_collection_cycle("sawayaka")
+    finally:
+        client.release.set()
+
+    assert len(cycle.shops) == 4
+    assert client.attempt == 2
+    assert client.first_attempt_details == 0
+    assert client.waiting_cancelled is True
+    assert client.retry_started_before_drain is False
+    assert client.max_active_details <= 4
+
+
+@pytest.mark.asyncio
+async def test_read_collection_cycle_preserves_primary_non_auth_error() -> None:
+    client = PrimaryWaitingFailureClient()
+    service = CycleReadTestService(client)
+
+    with pytest.raises(httpx.HTTPStatusError) as error:
+        await service.read_collection_cycle("sawayaka")
+
+    assert error.value.response.status_code == 500
+    assert client.first_attempt_details == 0
     assert client.max_active_details <= 4
 
 

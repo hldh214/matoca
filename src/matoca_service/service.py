@@ -345,23 +345,11 @@ class MatocaService:
                 attempt_tasks = [*detail_tasks, waiting_task]
                 try:
                     await asyncio.gather(*attempt_tasks)
-                except BaseException as error:
+                except BaseException:
                     for task in attempt_tasks:
                         if not task.done():
                             task.cancel()
-                    outcomes = await asyncio.gather(*attempt_tasks, return_exceptions=True)
-                    secondary_errors = [
-                        outcome
-                        for outcome in outcomes
-                        if isinstance(outcome, BaseException)
-                        and outcome is not error
-                        and not isinstance(outcome, asyncio.CancelledError)
-                    ]
-                    if secondary_errors:
-                        raise BaseExceptionGroup(
-                            "collection attempt failed with multiple errors",
-                            [error, *secondary_errors],
-                        ) from error
+                    await asyncio.gather(*attempt_tasks, return_exceptions=True)
                     raise
                 return CollectionCycle(
                     merchant_key=merchant_key,
