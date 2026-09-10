@@ -14,7 +14,12 @@ WEB_ROOT = Path(__file__).parent
 
 
 class DashboardService(Protocol):
-    async def dashboard(self, merchant_key: str, keyword: str | None) -> DashboardData: ...
+    async def dashboard(
+        self,
+        merchant_key: str,
+        keyword: str | None,
+        page: int = 1,
+    ) -> DashboardData: ...
 
 
 def create_app(service: DashboardService | None = None) -> FastAPI:
@@ -29,8 +34,9 @@ def create_app(service: DashboardService | None = None) -> FastAPI:
         request: Request,
         merchant: str = Query(default="sawayaka"),
         keyword: str | None = Query(default=None, max_length=80),
+        page: int = Query(default=1, ge=1),
     ) -> HTMLResponse:
-        data = await dashboard_service.dashboard(merchant, keyword)
+        data = await dashboard_service.dashboard(merchant, keyword, page)
         return templates.TemplateResponse(
             request=request,
             name="dashboard.html",
@@ -41,19 +47,17 @@ def create_app(service: DashboardService | None = None) -> FastAPI:
     async def dashboard_api(
         merchant: str = Query(default="sawayaka"),
         keyword: str | None = Query(default=None, max_length=80),
+        page: int = Query(default=1, ge=1),
     ) -> DashboardData:
-        return await dashboard_service.dashboard(merchant, keyword)
+        return await dashboard_service.dashboard(merchant, keyword, page)
 
     return app
-
-
-app = create_app()
 
 
 def run() -> None:
     settings = RuntimeSettings()
     uvicorn.run(
-        "matoca_service.web.app:app",
+        create_app(),
         host=settings.host,
         port=settings.port,
         reload=False,

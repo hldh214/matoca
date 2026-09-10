@@ -78,6 +78,7 @@ class TokenManager:
                 "aid": claims.aid,
                 "lsid": claims.lsid,
                 "updated_at": self._now(),
+                "pending_access_report": True,
             }
         )
         return state.model_copy(update={"line": line})
@@ -93,6 +94,12 @@ class TokenManager:
     async def ensure_native_token(self, *, force: bool = False) -> NativeTokenStatus:
         with self._store.locked():
             state = self._store.load()
+            if state.line.pending_access_report:
+                await self._refresh_client.report_refreshed_access_token(state.line.access_token)
+                state = state.model_copy(
+                    update={"line": state.line.model_copy(update={"pending_access_report": False})}
+                )
+                self._store.save(state)
             current = self._current_status(state, refreshed=False)
             if not force and current.access_expires_at - self._now() > self.REFRESH_THRESHOLD:
                 return current
@@ -103,7 +110,11 @@ class TokenManager:
             new_state = self._normalize(state, pair)
             self._store.save(new_state)
             await self._refresh_client.report_refreshed_access_token(pair.access_token)
-            return self._current_status(new_state, refreshed=True)
+            reported_state = new_state.model_copy(
+                update={"line": new_state.line.model_copy(update={"pending_access_report": False})}
+            )
+            self._store.save(reported_state)
+            return self._current_status(reported_state, refreshed=True)
 
     async def ensure_liff_token(
         self,

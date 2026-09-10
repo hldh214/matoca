@@ -18,6 +18,7 @@ class LineState(StateModel):
     lsid: str | None = None
     adid: str = Field(min_length=1)
     updated_at: datetime | None = None
+    pending_access_report: bool = False
 
 
 class LiffTokenState(StateModel):

@@ -94,6 +94,23 @@
             <p class="empty-state">条件に一致する店舗はありません</p>
           {% endfor %}
         </div>
+        <nav class="pagination" aria-label="店舗ページ">
+          {% if data.page > 1 %}
+            <a href="/?merchant={{ merchant_key }}&keyword={{ keyword }}&page={{ data.page - 1 }}">
+              前のページ
+            </a>
+          {% else %}
+            <span></span>
+          {% endif %}
+          <span>Page {{ data.page }}</span>
+          {% if data.shops %}
+            <a href="/?merchant={{ merchant_key }}&keyword={{ keyword }}&page={{ data.page + 1 }}">
+              次のページ
+            </a>
+          {% else %}
+            <span></span>
+          {% endif %}
+        </nav>
       </section>
     </main>
   </body>

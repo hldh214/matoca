@@ -55,7 +55,8 @@ Replace only the placeholder values in `state.json`:
     "aid": null,
     "lsid": null,
     "adid": "LINE device advertising identifier",
-    "updated_at": null
+    "updated_at": null,
+    "pending_access_report": false
   },
   "liff_tokens": {}
 }
@@ -280,7 +281,8 @@ The user creates it once before the first run:
     "aid": null,
     "lsid": null,
     "adid": "...",
-    "updated_at": null
+    "updated_at": null,
+    "pending_access_report": false
   },
   "liff_tokens": {}
 }

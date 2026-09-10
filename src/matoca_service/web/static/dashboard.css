@@ -206,6 +206,26 @@ main {
   border-bottom: 1px solid #d9dbd5;
 }
 
+.pagination {
+  min-height: 54px;
+  padding-top: 16px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  color: #6b6e68;
+  font-size: 13px;
+}
+
+.pagination a {
+  color: #20211f;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.pagination a:last-child {
+  text-align: right;
+}
+
 @media (max-width: 680px) {
   .topbar {
     min-height: 96px;

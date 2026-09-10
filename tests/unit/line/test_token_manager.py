@@ -51,14 +51,19 @@ class RecordingRefreshClient:
         events: list[str],
         *,
         old_pair: NativeTokenPair | None = None,
+        fail_new_report_once: bool = False,
     ) -> None:
         self.pair = pair
         self.events = events
         self.old_pair = old_pair or pair
+        self.fail_new_report_once = fail_new_report_once
 
     async def report_refreshed_access_token(self, access_token: str) -> None:
         label = "old" if access_token == self.old_pair.access_token else "new"
         self.events.append(f"report:{label}")
+        if label == "new" and self.fail_new_report_once:
+            self.fail_new_report_once = False
+            raise OSError("ambiguous report failure")
 
     async def refresh(self, access_token: str, refresh_token: str) -> NativeTokenPair:
         assert access_token == self.old_pair.access_token
@@ -120,7 +125,15 @@ async def test_manager_persists_pair_before_reporting_new_access(jwt_factory: Jw
 
     status = await manager.ensure_native_token(force=True)
 
-    assert events == ["lock", "load", "report:old", "refresh", "save:new-pair", "report:new"]
+    assert events == [
+        "lock",
+        "load",
+        "report:old",
+        "refresh",
+        "save:new-pair",
+        "report:new",
+        "save:new-pair",
+    ]
     assert status.refreshed
     assert store.state.line.rtid == "family"
     assert store.state.line.aid == "u-synthetic"
@@ -228,3 +241,41 @@ async def test_manager_reuses_valid_cached_liff_token(jwt_factory: JwtFactory) -
     assert status.source == "cache"
     assert status.access_token == "cached-liff"
     assert liff.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_new_access_report_is_persisted_and_recovered(
+    jwt_factory: JwtFactory,
+) -> None:
+    events: list[str] = []
+    old_pair = pair_tokens(jwt_factory, prefix="old")
+    new_pair = pair_tokens(jwt_factory)
+    store = RecordingStore(
+        AppState(
+            line=LineState(
+                access_token=old_pair.access_token,
+                refresh_token=old_pair.refresh_token,
+                adid="device-id",
+            )
+        ),
+        events,
+    )
+    client = RecordingRefreshClient(
+        new_pair,
+        events,
+        old_pair=old_pair,
+        fail_new_report_once=True,
+    )
+    manager = TokenManager(store, client, now=lambda: datetime(2026, 9, 10, tzinfo=UTC))
+
+    with pytest.raises(OSError, match="ambiguous report failure"):
+        await manager.ensure_native_token(force=True)
+
+    assert store.state.line.pending_access_report
+    events.clear()
+
+    status = await manager.ensure_native_token()
+
+    assert events == ["lock", "load", "report:new", "save:new-pair"]
+    assert not store.state.line.pending_access_report
+    assert not status.refreshed
