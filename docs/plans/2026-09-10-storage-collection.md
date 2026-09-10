@@ -51,7 +51,7 @@ def test_initialize_creates_private_database_and_schema(tmp_path: Path) -> None:
 
     assert stat.S_IMODE(database.path.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(database.path.stat().st_mode) == 0o600
-    assert database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0]) == 0
+    assert database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0]) == 1
 
 
 def test_initialize_is_idempotent(tmp_path: Path) -> None:
@@ -94,7 +94,7 @@ class Database:
         return result
 ```
 
-`_connect()` must set `PRAGMA foreign_keys=ON`, `PRAGMA busy_timeout=5000`, and initialize WAL once. `migrate()` applies ordered migration functions transactionally and advances `user_version` only after each migration succeeds.
+`_connect()` must set `PRAGMA foreign_keys=ON`, `PRAGMA busy_timeout=5000`, and initialize WAL once. Migration version 1 establishes the database bootstrap metadata. `migrate()` applies ordered migration functions transactionally and advances `user_version` only after each migration succeeds.
 
 - [ ] **Step 4: Add the runtime path and ignore contract**
 
@@ -173,7 +173,7 @@ Run: `uv run pytest tests/unit/storage/test_repositories.py -v`
 
 Expected: FAIL because the repository types do not exist.
 
-- [ ] **Step 4: Add migration version 1 tables**
+- [ ] **Step 4: Add migration version 2 tables**
 
 Create structured `shops`, `shop_observations`, `merchant_poll_state`, and `preferences` tables. Use this observation key and index:
 
@@ -498,7 +498,7 @@ git commit -m "feat: serve cached merchant snapshots"
 
 **Interfaces:**
 - Produces: `ShopRepository.rollup_and_prune(now: datetime) -> RetentionResult`.
-- Consumes: migration-1 observation and rollup tables.
+- Consumes: migration-2 observation and rollup tables.
 
 - [ ] **Step 1: Write a failing transactional retention test**
 
