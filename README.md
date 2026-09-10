@@ -4,7 +4,8 @@ Date: 2026-09-10
 
 ## Goal
 
-Build a single-user service deployed on a Linux VPS that:
+Build a portable, single-user service that can run locally or on a Linux
+server and:
 
 - Starts from a manually configured LINE native access-token and
   refresh-token pair.
@@ -12,7 +13,8 @@ Build a single-user service deployed on a Linux VPS that:
 - Obtains LIFF access tokens for configured merchants.
 - Later uses LIFF access tokens to explore and call Matoca APIs.
 - Supports Sawayaka first without hard-coding Sawayaka into protocol clients.
-- Exposes a Web UI through Cloudflare Zero Trust.
+- Can expose a Web UI behind an external access-control layer such as
+  Cloudflare Zero Trust.
 
 The first implementation phase is intentionally limited to LINE
 authentication. Matoca business operations are not implemented until the LINE
@@ -23,17 +25,15 @@ This system cannot guarantee permanent operation. LINE logout, device
 revocation, account restrictions, token revocation, or private protocol
 changes can require manual recovery or a new token pair.
 
-## Deployment Boundary
+## Runtime Boundary
 
-The project lives at:
+All paths in this document are relative to the repository root unless stated
+otherwise. The application does not depend on a specific checkout directory,
+operating-system user, or hosting provider.
 
-```text
-/root/matoca
-```
-
-The future Web service runs as one process, listens only on `127.0.0.1`, and
-is reached through a `cloudflared` tunnel. Cloudflare Zero Trust performs
-user authentication.
+The future Web service runs as one process and listens on a configurable
+address. For a private server deployment, the recommended default is
+`127.0.0.1` behind a trusted reverse proxy or access-control tunnel.
 
 The application still performs Origin and CSRF validation for state-changing
 requests. It never displays raw LINE or LIFF tokens in the Web UI, logs, test
@@ -48,7 +48,7 @@ The project uses `uv` for:
 - Resolving and locking dependencies.
 - Running tests, tools, scripts, and the application.
 
-The VPS system Python is not used by the project.
+The operating system's Python installation is not used by the project.
 
 Pinned interpreter:
 
@@ -106,8 +106,10 @@ No database is required for the current single-user, single-instance design.
 
 ## Repository-Local Configuration
 
-All runtime configuration and state are stored directly in `/root/matoca`.
-Real configuration files are ignored by Git.
+All runtime configuration and state are stored in the repository root by
+default. Paths can be overridden through environment variables when a
+packager or deployment needs a different layout. Real configuration files
+are ignored by Git.
 
 Ignored files:
 
@@ -485,16 +487,15 @@ src/matoca_service/
     waiting_poll.py
 ```
 
-The Web UI remains behind Cloudflare Zero Trust, binds to `127.0.0.1`, and
-uses browser geolocation with an explicit manual fallback for queue
-operations.
+The Web UI is designed to run behind a trusted access-control layer. It uses
+browser geolocation with an explicit manual fallback for queue operations.
 
 ## Initial Project Structure
 
 Phase 1 creates:
 
 ```text
-/root/matoca
+.
   .gitignore
   .python-version
   uv.toml
@@ -538,4 +539,4 @@ Phase 1 creates:
 6. Run explicit live LINE integration tests.
 7. Use the authenticated client to explore Matoca APIs.
 8. Design and implement the generic Matoca client.
-9. Add the Web UI and Cloudflare deployment files.
+9. Add the Web UI and optional deployment examples.
