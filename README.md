@@ -4,78 +4,193 @@ Date: 2026-09-10
 
 ## Goal
 
-Build a single-user service for a Linux VPS that:
+Build a single-user service deployed on a Linux VPS that:
 
-- Bootstraps from one LINE native access-token and refresh-token pair.
-- Rotates and persists both tokens automatically.
-- Obtains merchant-specific LIFF access tokens.
-- Uses LIFF access tokens to call Matoca APIs.
-- Supports shop discovery, shop details, current waiting status, joining a
-  queue, and later cancellation.
-- Supports Sawayaka first while keeping merchant-specific values in
-  configuration.
-- Exposes a small Web UI through Cloudflare Zero Trust.
+- Starts from a manually configured LINE native access-token and
+  refresh-token pair.
+- Automatically rotates and persists both LINE tokens.
+- Obtains LIFF access tokens for configured merchants.
+- Later uses LIFF access tokens to explore and call Matoca APIs.
+- Supports Sawayaka first without hard-coding Sawayaka into protocol clients.
+- Exposes a Web UI through Cloudflare Zero Trust.
 
-The service cannot promise permanent operation. LINE logout, device
+The first implementation phase is intentionally limited to LINE
+authentication. Matoca business operations are not implemented until the LINE
+refresh and LIFF issuance paths have complete unit and live integration test
+coverage.
+
+This system cannot guarantee permanent operation. LINE logout, device
 revocation, account restrictions, token revocation, or private protocol
-changes can require a new bootstrap.
+changes can require manual recovery or a new token pair.
 
 ## Deployment Boundary
 
-The application runs as one process on a Linux VPS and binds only to
-`127.0.0.1`. A `cloudflared` tunnel is the only intended inbound path.
-Cloudflare Zero Trust performs user authentication.
+The project lives at:
 
-The application still performs CSRF and Origin validation for state-changing
-requests. It never displays or returns raw LINE or LIFF tokens.
+```text
+/root/matoca
+```
+
+The future Web service runs as one process, listens only on `127.0.0.1`, and
+is reached through a `cloudflared` tunnel. Cloudflare Zero Trust performs
+user authentication.
+
+The application still performs Origin and CSRF validation for state-changing
+requests. It never displays raw LINE or LIFF tokens in the Web UI, logs, test
+reports, or exception messages.
+
+## Python and Package Management
+
+The project uses `uv` for:
+
+- Installing and managing CPython.
+- Creating `.venv`.
+- Resolving and locking dependencies.
+- Running tests, tools, scripts, and the application.
+
+The VPS system Python is not used by the project.
+
+Pinned interpreter:
+
+```text
+CPython 3.14
+```
+
+Repository files:
+
+```text
+.python-version
+pyproject.toml
+uv.lock
+uv.toml
+```
+
+Expected settings:
+
+```text
+.python-version: 3.14
+requires-python: >=3.14,<3.15
+python-preference: only-managed
+```
+
+All commands run through `uv`, for example:
+
+```bash
+uv python install 3.14
+uv sync --all-groups
+uv run pytest
+uv run matoca-line status
+```
+
+Direct use of `/usr/bin/python`, `python3`, `pip`, or a manually created
+virtual environment is outside the supported workflow.
 
 ## Technology
 
-- Python 3.10 initially, matching the VPS. Code targets Python 3.10 or newer.
+Phase 1:
+
+- CPython 3.14 managed by `uv`.
+- HTTPX with HTTP/2 support.
+- Apache Thrift Compact Protocol.
+- Pydantic v2 for state and protocol result validation.
+- Typer for diagnostic and administrative CLI commands.
+- pytest, pytest-asyncio, respx, coverage, Ruff, and mypy.
+- `fcntl.flock` and atomic file replacement for state persistence.
+
+Later phases:
+
 - FastAPI and Uvicorn with one worker.
-- HTTPX for LINE and Matoca HTTP calls.
-- Apache Thrift Compact Protocol primitives for the private LINE RPC payloads.
-- Pydantic for configuration and domain models.
 - Jinja2 and HTMX for the initial Web UI.
-- pytest and respx for protocol and HTTP regression tests.
-- `fcntl.flock` plus atomic file replacement for persistent state.
 
-No database is required for the first version.
+No database is required for the current single-user, single-instance design.
 
-## Files and State
+## Repository-Local Configuration
 
-Fixed configuration:
+All runtime configuration and state are stored directly in `/root/matoca`.
+Real configuration files are ignored by Git.
 
-```text
-/etc/matoca/config.toml
-```
-
-Bootstrap secrets:
+Ignored files:
 
 ```text
-/etc/matoca/bootstrap.env
+.env
+config.toml
+state.json
+state.lock
+events.jsonl
+*.tmp
 ```
 
-Mutable state:
+Tracked templates:
 
 ```text
-/var/lib/matoca/state.json
-/var/lib/matoca/state.lock
-/var/lib/matoca/events.jsonl
+.env.example
+config.example.toml
+state.example.json
 ```
 
-Secret and state files must be owned by the service user and have mode `0600`.
+`.gitignore` must also exclude:
 
-The bootstrap environment contains both tokens because the captured refresh
-request uses the old native access token in `x-line-access` and the refresh
-token in the Thrift request body.
+```text
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+coverage.xml
+```
 
-After the first successful import, rotated credentials are read from
-`state.json`; the original environment values are not used again.
+File permissions:
 
-## Token State
+```text
+.env        0600
+config.toml 0600
+state.json  0600
+```
 
-`state.json` contains:
+### `.env`
+
+`.env` contains fixed process configuration only:
+
+```dotenv
+MATOCA_CONFIG_FILE=./config.toml
+MATOCA_STATE_FILE=./state.json
+MATOCA_LOG_LEVEL=INFO
+MATOCA_HOST=127.0.0.1
+MATOCA_PORT=8080
+```
+
+It does not contain LINE access tokens, refresh tokens, LIFF tokens, or other
+rotating authentication data.
+
+### `config.toml`
+
+`config.toml` contains fixed merchant and client metadata:
+
+```toml
+[line]
+host = "legy-jp.line-apps.com"
+application = "ANDROIDSECONDARY\t26.11.0\tAndroid OS\t14"
+locale = "en_US"
+protocol_version = "1"
+user_agent = "Line/26.11.0"
+
+[merchants.sawayaka]
+name = "Sawayaka"
+liff_id = "2006055787-m6P6OJ38"
+api_base_url = "https://admin.junbanmachi.jp"
+origin = "https://exclusive-mini.junbanmachi.jp"
+entry_url = "https://exclusive-mini.junbanmachi.jp/sawayaka/"
+line_entry_url = "line://app/2006055787-m6P6OJ38"
+```
+
+Merchant configuration is data. Protocol clients do not contain
+Sawayaka-specific branches.
+
+### `state.json`
+
+`state.json` is the only source of mutable authentication state.
+
+The user creates it once before the first run:
 
 ```json
 {
@@ -83,184 +198,285 @@ After the first successful import, rotated credentials are read from
   "line": {
     "access_token": "...",
     "refresh_token": "...",
-    "access_expires_at": "...",
-    "refresh_expires_at": "...",
-    "rtid": "...",
-    "updated_at": "..."
+    "access_expires_at": null,
+    "refresh_expires_at": null,
+    "rtid": null,
+    "aid": null,
+    "lsid": null,
+    "adid": "...",
+    "updated_at": null
   },
   "liff_tokens": {}
 }
 ```
 
-Updates use this sequence:
+On first load, the service decodes the configured JWTs, validates that the
+access and refresh tokens belong together, derives claims such as `aid`,
+`lsid`, `rtid`, and expiry times, and atomically normalizes the state file.
 
-1. Acquire an exclusive file lock.
-2. Reload the newest state.
-3. Perform at most one token refresh.
-4. Validate and decode the returned token pair.
-5. Write the complete new state to a temporary file.
-6. Flush and `fsync` the temporary file.
-7. Atomically replace `state.json`.
-8. Release the lock.
+There is no bootstrap environment file and no import or migration from
+`.env`.
 
-The new token pair is persisted before any subsequent LIFF or Matoca request.
-Ambiguous network failures during refresh are not retried automatically,
-because the old refresh token may already have been consumed.
+## Atomic Token Rotation
 
-## Captured LINE Flow
+The captured refresh request requires:
 
-Native token refresh:
+```text
+Header: old x-line-access
+Body: old Refresh Token
+```
+
+The refresh response returns:
+
+```text
+new x-line-access
+new Refresh Token
+```
+
+The two returned tokens form one state transition and are never persisted
+separately.
+
+Update sequence:
+
+1. Acquire an exclusive `state.lock` using `fcntl.flock`.
+2. Reload `state.json` after acquiring the lock.
+3. Re-evaluate whether refresh is still required.
+4. Send at most one refresh request.
+5. Decode and validate both returned JWTs.
+6. Verify token relationships, identifiers, and expiry ordering.
+7. Build a complete replacement state document in memory.
+8. Write it to a temporary file in the repository directory.
+9. Flush and `fsync` the file.
+10. Set mode `0600`.
+11. Atomically replace `state.json` with `os.replace`.
+12. `fsync` the parent directory.
+13. Release the lock.
+
+The new token pair is persisted before reporting the refreshed access token
+or making any LIFF request.
+
+An ambiguous network failure during `refresh` is not retried automatically.
+The old refresh token might already have been consumed. The CLI reports a
+recovery-required state without printing either token.
+
+## Captured Native Refresh Flow
+
+Endpoint:
 
 ```text
 POST https://legy-jp.line-apps.com/EXT/auth/tokenrefresh/v1
 Content-Type: application/x-thrift
-Thrift method: refresh
-Header: x-line-access: <old native access token>
-Body: <old native refresh token>
-Response: <new native access token> + <new native refresh token>
+Thrift Compact Protocol
 ```
 
-Observed properties:
+Sequence:
 
-- Native access token lifetime is seven days.
+```text
+reportRefreshedAccessToken(old access token)
+refresh(old refresh token)
+    -> new access token
+    -> new refresh token
+reportRefreshedAccessToken(new access token)
+```
+
+The successful capture proves:
+
+- Native access-token lifetime is seven days.
+- The refresh-token JWT is rotated.
 - Refresh-token expiry rolls forward approximately one year.
-- The refresh-token JWT changes on refresh.
-- Its `ati` claim changes to the new access-token `jti`.
-- Its `rot` claim is `ROTATE`.
+- Refresh-token `jti` remains the credential-family identifier.
+- Refresh-token `ati` changes to the new access-token `jti`.
+- Refresh-token `rot` is `ROTATE`.
 
-The response is followed by a
-`reportRefreshedAccessToken` RPC. Reporting failure is logged but does not
-replace the already-persisted token pair.
+The implementation uses structured Thrift Compact Protocol reads and writes.
+It must not scan binary payloads for strings beginning with `eyJ`.
 
-LIFF view issuance:
+Unknown response fields are skipped according to their Thrift types so future
+additive protocol changes do not break token extraction.
+
+## Captured LIFF Issuance Flow
+
+Endpoint:
 
 ```text
 POST https://legy-jp.line-apps.com/LIFF1
 Content-Type: application/x-thrift
+Thrift Compact Protocol
 Thrift method: issueLiffView
-Header: x-line-access: <current native access token>
-Header: x-line-liff-id: <merchant LIFF ID>
-Response: LIFF access token and related LIFF view data
 ```
 
-LIFF tokens are cached per LIFF ID. If a Matoca request rejects a LIFF token,
-the service obtains one new LIFF token and retries the idempotent request
-once. State-changing queue requests are never blindly retried.
+Headers:
 
-## Matoca API
-
-All authenticated Matoca requests use:
-
-```http
-Authorization: Bearer <LIFF access token>
-X-Access-Type: mini
-Accept: application/json
-Origin: <merchant origin>
+```text
+x-line-access: current native access token
+x-line-liff-id: merchant LIFF ID
+x-line-application: configured native application metadata
+x-lal: configured locale
+x-lpv: configured protocol version
 ```
 
-Known endpoints:
+The request includes account/device data and merchant-specific LIFF entry
+data. Values derivable from token claims are derived rather than duplicated
+in configuration. Device values that are not derivable, including `adid`,
+remain in `state.json`.
+
+Returned LIFF access tokens are stored in:
+
+```text
+state.json -> liff_tokens -> <liff_id>
+```
+
+The LIFF token manager supports:
+
+- Obtaining a LIFF token for a configured merchant.
+- Returning a cached token while valid.
+- Forcing one renewal.
+- Keeping tokens isolated by LIFF ID.
+- Never logging or returning token text through diagnostics.
+
+## Phase 1 Scope: LINE Authentication
+
+Phase 1 delivers only:
+
+1. `uv` project and managed CPython setup.
+2. Configuration and state models.
+3. JWT decoding and relationship validation.
+4. Atomic JSON state store and file locking.
+5. Thrift Compact Protocol structures for:
+   - `refresh`
+   - `reportRefreshedAccessToken`
+   - `issueLiffView`
+6. Native access and refresh token rotation.
+7. LIFF access-token issuance and per-LIFF caching.
+8. CLI diagnostics with redacted output.
+9. Offline unit tests.
+10. Explicit live integration tests using the ignored `state.json`.
+
+Matoca shop, waiting, queue creation, cancellation, and Web UI modules are
+not part of Phase 1.
+
+## Phase 1 CLI
+
+Planned commands:
+
+```bash
+uv run matoca-line state validate
+uv run matoca-line state status
+uv run matoca-line token refresh
+uv run matoca-line token ensure
+uv run matoca-line liff issue sawayaka
+uv run matoca-line liff status
+```
+
+Example redacted status:
+
+```text
+Native access token: valid
+Access expiry: 2026-09-17T09:47:18+09:00
+Refresh token: present
+Refresh expiry: 2027-09-10T09:47:18+09:00
+Credential family: 15cf1ed2...8bed7
+LIFF sawayaka: valid
+```
+
+## Testing Requirements
+
+### Offline tests
+
+- Thrift message header, field ID, type, and nesting tests.
+- Golden-byte request tests built with synthetic, non-secret tokens.
+- Captured-response-shape tests using fully sanitized fixtures.
+- JWT header and payload decoding tests.
+- Access and refresh token relationship tests:
+  - refresh `jti` equals access `rtid`
+  - refresh `ati` points to the associated access `jti`
+  - `aud`, `scp`, `aid`, `lsid`, and application metadata agree
+- Expiry and refresh-threshold tests.
+- Unknown Thrift field skipping tests.
+- Atomic replacement, permissions, `fsync`, and lock-contention tests.
+- Tests proving tokens are redacted from logs and exceptions.
+- Tests proving ambiguous refresh failures are not retried.
+- Tests proving a returned token pair is persisted before reporting or LIFF
+  issuance.
+
+### Live integration tests
+
+Live tests are opt-in and excluded from the default test command:
+
+```bash
+uv run pytest
+uv run pytest -m live
+```
+
+Rules for live tests:
+
+- Read credentials only from ignored `state.json`.
+- Acquire the same exclusive state lock as production.
+- Never run in parallel.
+- Save rotated tokens atomically.
+- Never print request or response bodies containing credentials.
+- A destructive refresh test runs only when explicitly selected.
+- LIFF issuance may run independently while the native token remains valid.
+
+Successful live tests establish that the implementation reproduces the
+captured protocol against the real LINE service.
+
+## Post-Phase-1 Interface Exploration
+
+After all Phase 1 offline tests pass and live refresh plus LIFF issuance are
+verified, the agent may use the authorized credentials in `state.json` to
+explore Matoca behavior.
+
+Exploration no longer depends on Charles.
+
+Use, in order:
+
+1. Direct HTTP calls with the issued LIFF access token for known Matoca APIs.
+2. An agent-controlled browser when JavaScript execution, navigation state,
+   geolocation, or UI-generated payloads must be observed.
+3. Sanitized JSON fixtures committed to the repository.
+
+Exploration starts with read-only calls. State-changing actions such as
+joining or cancelling a real queue require explicit user authorization for
+that operation.
+
+Target operations:
 
 ```text
 POST   /liff/auth
 GET    /liff/shops
 GET    /liff/shops/{shop_id}
 GET    /liff/waiting
+GET    /liff/waiting/{waiting_id}
 POST   /liff/waiting
+DELETE /liff/waiting/{waiting_id}
 ```
 
-Captured queue creation payload:
+The agent records:
 
-```json
-{
-  "shop_id": "3272",
-  "adult_count": 2,
-  "child_count": 0,
-  "answer1": 0,
-  "answer2": null,
-  "lat": 34.7042983,
-  "lng": 137.7344733,
-  "in_advance_information": "",
-  "ref": "web"
-}
-```
+- Request method, path, query, headers, and JSON body.
+- Response status and schema.
+- Authentication failure behavior.
+- Active waiting-state schemas.
+- Cancellation behavior.
+- Duplicate and suspended-shop errors.
+- LIFF token expiry and renewal behavior.
 
-The form is generated dynamically from the `forms` object returned by shop
-details. Adult/child limits and confirmation answers are never hard-coded for
-Sawayaka.
+No raw tokens are committed to Git.
 
-The Web UI uses browser geolocation for `lat` and `lng`, with an explicit
-manual fallback. It must not silently substitute the VPS location.
+## Later Architecture
 
-## Missing Captures
-
-Implementation can start without these, but the corresponding features remain
-disabled until actual traffic confirms them:
-
-- Active-queue response from `GET /liff/waiting`.
-- Detail response from `GET /liff/waiting/{waiting_id}`.
-- Actual cancellation request, expected to be
-  `DELETE /liff/waiting/{waiting_id}` based on the JavaScript bundle.
-- Response and subsequent status after cancellation.
-- Duplicate queue, suspended shop, invalid form, expired LIFF token, invalid
-  refresh token, rate-limit, and server-error responses.
-
-## Merchant Model
-
-Merchant configuration is data, not a subclass:
-
-```toml
-[merchants.sawayaka]
-name = "Sawayaka"
-liff_id = "2006055787-m6P6OJ38"
-api_base_url = "https://admin.junbanmachi.jp"
-origin = "https://exclusive-mini.junbanmachi.jp"
-entry_url = "https://exclusive-mini.junbanmachi.jp/sawayaka/"
-```
-
-Each LIFF ID has its own cached LIFF access token. The generic Matoca client
-receives a merchant configuration and implements the common endpoints.
-
-## Web UI
-
-Initial pages:
-
-- System/token health without raw token values.
-- Merchant selector.
-- Nearby and keyword shop search.
-- Shop details and dynamic queue form.
-- Current waiting status.
-- Queue creation confirmation and result.
-- Cancellation only after its request is captured and tested.
-
-Queue creation is protected against accidental duplication by:
-
-- A current-waiting preflight check.
-- A process-local operation lock.
-- A disabled submit button while the request is running.
-- No automatic retry after an ambiguous POST failure.
-
-## Modules
+After protocol exploration, later modules are added:
 
 ```text
 src/matoca_service/
-  main.py
-  config.py
-  line/
-    thrift_codec.py
-    token_manager.py
-    refresh.py
-    liff.py
   matoca/
     client.py
     models.py
     service.py
   merchants/
-    config.py
-    registry.py
-  state/
     models.py
-    store.py
-    locking.py
+    registry.py
   web/
     routes.py
     templates/
@@ -269,23 +485,57 @@ src/matoca_service/
     waiting_poll.py
 ```
 
-## Testing
+The Web UI remains behind Cloudflare Zero Trust, binds to `127.0.0.1`, and
+uses browser geolocation with an explicit manual fallback for queue
+operations.
 
-- Golden-byte tests built from sanitized captured Thrift messages.
-- JWT claim and expiry tests.
-- Atomic state replacement and lock-contention tests.
-- Refresh rotation tests confirming both returned tokens are persisted.
-- HTTP tests using recorded, sanitized Matoca responses.
-- Tests proving POST/DELETE requests are not retried automatically.
-- Merchant configuration tests proving no Sawayaka-specific API logic leaks
-  into the generic client.
+## Initial Project Structure
+
+Phase 1 creates:
+
+```text
+/root/matoca
+  .gitignore
+  .python-version
+  uv.toml
+  pyproject.toml
+  uv.lock
+  README.md
+  .env.example
+  config.example.toml
+  state.example.json
+  src/
+    matoca_service/
+      __init__.py
+      config.py
+      cli.py
+      line/
+        __init__.py
+        jwt.py
+        models.py
+        thrift_codec.py
+        refresh.py
+        liff.py
+        token_manager.py
+      state/
+        __init__.py
+        models.py
+        store.py
+        locking.py
+  tests/
+    fixtures/
+    unit/
+    integration/
+```
 
 ## Delivery Phases
 
-1. Project foundation, configuration, state storage, logging, and tests.
-2. Thrift codec and native token refresh.
-3. LIFF issuance and per-merchant LIFF token cache.
-4. Matoca shop and current-waiting read operations.
-5. Queue creation and basic Web UI.
-6. Cancellation and full waiting-state display after missing captures are
-   obtained.
+1. Rewrite and approve this design.
+2. Create a detailed implementation plan.
+3. Build project foundation and state handling with tests.
+4. Implement and test native LINE token refresh.
+5. Implement and test LIFF issuance.
+6. Run explicit live LINE integration tests.
+7. Use the authenticated client to explore Matoca APIs.
+8. Design and implement the generic Matoca client.
+9. Add the Web UI and Cloudflare deployment files.
