@@ -1,0 +1,11 @@
+.merchant-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.merchant-photo-la_ohana_yokohamahonmoku {
+  padding: 18px;
+  object-fit: contain;
+  background: #fff;
+}

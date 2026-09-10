@@ -44,6 +44,7 @@ class MerchantSummary(BaseModel):
 
     key: str
     name: str
+    cover_image_url: str | None = None
 
 
 class MerchantSnapshot(BaseModel):
@@ -107,7 +108,13 @@ class MatocaService:
 
     def list_merchants(self) -> list[MerchantSummary]:
         return [
-            MerchantSummary(key=key, name=merchant.name)
+            MerchantSummary(
+                key=key,
+                name=merchant.name,
+                cover_image_url=(
+                    str(merchant.cover_image_url) if merchant.cover_image_url else None
+                ),
+            )
             for key, merchant in self._registry.merchants.items()
         ]
 
@@ -202,7 +209,13 @@ class MatocaService:
                 partial_stale = True
         merchant = self._merchant(merchant_key)
         return MerchantSnapshot(
-            merchant=MerchantSummary(key=merchant_key, name=merchant.name),
+            merchant=MerchantSummary(
+                key=merchant_key,
+                name=merchant.name,
+                cover_image_url=(
+                    str(merchant.cover_image_url) if merchant.cover_image_url else None
+                ),
+            ),
             refreshed_at=now,
             shops=shops,
             waiting=waiting,

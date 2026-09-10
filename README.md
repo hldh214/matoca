@@ -18,6 +18,7 @@ The working implementation currently supports:
 | Merchant | Status | Capabilities |
 | --- | --- | --- |
 | 炭焼きレストラン さわやか | Supported | Shop availability, wait estimates, join queue, current queue, cancellation |
+| ラ・オハナ 横浜本牧 | Supported | Shop availability, wait estimates, join queue, current queue, cancellation |
 
 Supported merchants are defined by the tracked internal registry
 `src/matoca_service/merchant_registry.toml`. Users configure LINE client metadata and

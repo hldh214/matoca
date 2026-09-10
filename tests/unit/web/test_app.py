@@ -13,7 +13,18 @@ from matoca_service.web.app import create_app
 
 class FakeDashboardService:
     def list_merchants(self) -> list[MerchantSummary]:
-        return [MerchantSummary(key="sawayaka", name="炭焼きレストラン さわやか")]
+        return [
+            MerchantSummary(
+                key="sawayaka",
+                name="炭焼きレストラン さわやか",
+                cover_image_url="https://example.test/sawayaka.jpg",
+            ),
+            MerchantSummary(
+                key="la_ohana_yokohamahonmoku",
+                name="ラ・オハナ 横浜本牧",
+                cover_image_url="https://example.test/la-ohana.png",
+            ),
+        ]
 
     async def merchant_snapshot(
         self,
@@ -102,6 +113,9 @@ async def test_home_page_renders_japanese_merchant_selector_without_tokens() -> 
     assert "ブランドを選択" in response.text
     assert "炭焼きレストラン さわやか" in response.text
     assert "/merchants/sawayaka" in response.text
+    assert "ラ・オハナ 横浜本牧" in response.text
+    assert "/merchants/la_ohana_yokohamahonmoku" in response.text
+    assert 'src="https://example.test/la-ohana.png"' in response.text
     assert "access_token" not in response.text
     assert "liff-secret" not in response.text
 

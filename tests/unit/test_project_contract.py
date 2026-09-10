@@ -33,6 +33,17 @@ def test_builtin_registry_contains_supported_sawayaka_merchant() -> None:
     assert registry.merchants["sawayaka"].liff_id == "2006055787-m6P6OJ38"
 
 
+def test_builtin_registry_contains_la_ohana_yokohamahonmoku() -> None:
+    registry = MerchantRegistry.load_builtin()
+
+    merchant = registry.merchants["la_ohana_yokohamahonmoku"]
+    assert merchant.name_ja == "ラ・オハナ 横浜本牧"
+    assert merchant.liff_id == "2009221823-CiKhIxff"
+    assert str(merchant.entry_url) == (
+        "https://exclusive-mini.junbanmachi.jp/la-ohana-yokohamahonmoku/"
+    )
+
+
 def test_line_client_profile_is_loaded_separately(tmp_path: Path) -> None:
     profile = tmp_path / "line_client.toml"
     profile.write_text(

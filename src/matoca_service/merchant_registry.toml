@@ -6,3 +6,12 @@ origin = "https://exclusive-mini.junbanmachi.jp"
 entry_url = "https://exclusive-mini.junbanmachi.jp/sawayaka/"
 line_entry_url = "line://app/2006055787-m6P6OJ38"
 cover_image_url = "https://admin.junbanmachi.jp/assets/shopimage/66cd1ae04fc15.jpg"
+
+[merchants.la_ohana_yokohamahonmoku]
+name = "ラ・オハナ 横浜本牧"
+liff_id = "2009221823-CiKhIxff"
+api_base_url = "https://admin.junbanmachi.jp"
+origin = "https://exclusive-mini.junbanmachi.jp"
+entry_url = "https://exclusive-mini.junbanmachi.jp/la-ohana-yokohamahonmoku/"
+line_entry_url = "line://app/2009221823-CiKhIxff"
+cover_image_url = "https://ch.line-scdn.net/0h2mb7OVA-bUJfTnK7HSMSFQ8TZiBsLHNJfXp5JXomMHooLGFCZ1chJD8baBU3BXVoa3h9VHs1bBJ6FVh_Y0lHUzobb3YwAUxwKkBpR3kleAIuLk8VJQ/f256x256"

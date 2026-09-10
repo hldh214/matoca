@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Matoca | ブランドを選択</title>
     <link rel="stylesheet" href="{{ url_for('static', path='/dashboard.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='/merchant-selector.css') }}">
   </head>
   <body>
     <header class="app-header">
@@ -19,7 +20,11 @@
       <div class="merchant-grid">
         {% for merchant in merchants %}
           <a class="merchant-card" href="/merchants/{{ merchant.key }}">
-            <div class="merchant-photo merchant-photo-{{ merchant.key }}" role="img" aria-label="{{ merchant.name }}"></div>
+            {% if merchant.cover_image_url %}
+              <img class="merchant-photo merchant-photo-{{ merchant.key }}" src="{{ merchant.cover_image_url }}" alt="{{ merchant.name }}">
+            {% else %}
+              <div class="merchant-photo" role="img" aria-label="{{ merchant.name }}"></div>
+            {% endif %}
             <div class="merchant-copy">
               <span>対応ブランド</span>
               <h2>{{ merchant.name }}</h2>
