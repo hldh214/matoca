@@ -19,8 +19,10 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.path.parent, 0o700)
         with self._connect() as connection:
-            migrate(connection)
-        self._enforce_file_modes()
+            try:
+                migrate(connection)
+            finally:
+                self._enforce_file_modes()
 
     def read(self, operation: Callable[[sqlite3.Connection], T]) -> T:
         with self._connect() as connection:
