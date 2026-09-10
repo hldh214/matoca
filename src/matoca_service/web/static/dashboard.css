@@ -1,0 +1,244 @@
+:root {
+  color: #20211f;
+  background: #f4f5f2;
+  font-family: Inter, "Noto Sans JP", system-ui, sans-serif;
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+.topbar {
+  min-height: 116px;
+  padding: 24px max(24px, calc((100vw - 1120px) / 2));
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  color: #fff;
+  background: #20211f;
+  border-bottom: 4px solid #cc302b;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 32px;
+  line-height: 1;
+}
+
+h2 {
+  font-size: 22px;
+}
+
+h3 {
+  font-size: 16px;
+}
+
+.eyebrow {
+  margin-bottom: 7px;
+  color: #9da19a;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.merchant {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+main {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 28px 24px 64px;
+}
+
+.status-band {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid #d9dbd5;
+  background: #fff;
+}
+
+.status-band > div {
+  min-width: 0;
+  padding: 18px 20px;
+  border-right: 1px solid #d9dbd5;
+}
+
+.status-band > div:last-child {
+  border-right: 0;
+}
+
+.status-band span,
+.status-band small,
+.queue-count span {
+  display: block;
+  color: #6b6e68;
+  font-size: 12px;
+}
+
+.status-band strong {
+  display: block;
+  margin: 5px 0;
+  color: #17643b;
+  font-size: 18px;
+}
+
+.waiting-section,
+.shops-section {
+  margin-top: 34px;
+}
+
+.section-heading {
+  padding-bottom: 13px;
+  border-bottom: 2px solid #20211f;
+}
+
+.shops-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.empty-state {
+  padding: 28px 0;
+  color: #747770;
+}
+
+.search label {
+  display: block;
+  margin-bottom: 5px;
+  color: #555852;
+  font-size: 12px;
+}
+
+.search-row {
+  display: flex;
+  width: min(360px, 100%);
+}
+
+.search input {
+  min-width: 0;
+  flex: 1;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid #bbbeb7;
+  border-right: 0;
+  border-radius: 4px 0 0 4px;
+  background: #fff;
+  font: inherit;
+}
+
+.search button {
+  height: 40px;
+  padding: 0 18px;
+  border: 1px solid #20211f;
+  border-radius: 0 4px 4px 0;
+  color: #fff;
+  background: #20211f;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.shop-list {
+  background: #fff;
+}
+
+.shop-row {
+  min-height: 84px;
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid #d9dbd5;
+}
+
+.shop-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.shop-id {
+  color: #8a8d86;
+  font: 12px ui-monospace, monospace;
+}
+
+.shop-main p {
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+  color: #72756f;
+  font-size: 13px;
+}
+
+.queue-count {
+  min-width: 92px;
+  text-align: right;
+}
+
+.queue-count strong {
+  display: block;
+  color: #cc302b;
+  font-size: 18px;
+}
+
+.waiting-item {
+  padding: 18px;
+  display: flex;
+  justify-content: space-between;
+  background: #fff;
+  border-bottom: 1px solid #d9dbd5;
+}
+
+@media (max-width: 680px) {
+  .topbar {
+    min-height: 96px;
+    padding: 20px;
+  }
+
+  main {
+    padding: 20px 16px 48px;
+  }
+
+  .status-band {
+    grid-template-columns: 1fr;
+  }
+
+  .status-band > div {
+    border-right: 0;
+    border-bottom: 1px solid #d9dbd5;
+  }
+
+  .status-band > div:last-child {
+    border-bottom: 0;
+  }
+
+  .shops-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .search-row {
+    width: 100%;
+  }
+
+  .shop-row {
+    align-items: flex-start;
+  }
+}

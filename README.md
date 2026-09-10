@@ -2,6 +2,82 @@
 
 Date: 2026-09-10
 
+## Current Status
+
+The working implementation currently supports:
+
+- Structural validation of a configured LINE native access/refresh pair.
+- Atomic native credential rotation through the captured Thrift Compact
+  Protocol endpoint.
+- LIFF access-token issuance and per-LIFF caching.
+- Matoca `/liff/auth`, `/liff/shops`, and `/liff/waiting`.
+- A responsive FastAPI Web UI showing authentication status, current
+  receptions, shop search, and waiting counts.
+
+The real Sawayaka flow was verified on 2026-09-10:
+
+```text
+configured LINE native pair
+  -> issueLiffView
+  -> LIFF access token
+  -> POST /liff/auth: 200 success
+  -> GET /liff/shops: 200, real shop data
+```
+
+Matoca directly reuses the LIFF access token as its Bearer credential. The
+observed `/liff/auth` response does not issue a Matoca cookie, session, or
+replacement JWT.
+
+## Quick Start
+
+Install `uv`, then run:
+
+```bash
+uv python install 3.14
+uv sync --all-groups
+cp .env.example .env
+cp config.example.toml config.toml
+cp state.example.json state.json
+chmod 600 .env config.toml state.json
+```
+
+Replace only the placeholder values in `state.json`:
+
+```json
+{
+  "version": 1,
+  "line": {
+    "access_token": "current LINE native access token",
+    "refresh_token": "matching LINE native refresh token",
+    "access_expires_at": null,
+    "refresh_expires_at": null,
+    "rtid": null,
+    "aid": null,
+    "lsid": null,
+    "adid": "LINE device advertising identifier",
+    "updated_at": null
+  },
+  "liff_tokens": {}
+}
+```
+
+Start the Web UI:
+
+```bash
+uv run matoca-web
+```
+
+The default address is:
+
+```text
+http://127.0.0.1:8080
+```
+
+For a private server, keep this loopback binding and point Cloudflare Tunnel
+or another trusted reverse proxy at it. The application intentionally does
+not implement user login because the deployment is expected to be protected
+by the external access-control layer.
+
 ## Goal
 
 Build a portable, single-user service that can run locally or on a Linux
@@ -16,10 +92,8 @@ server and:
 - Can expose a Web UI behind an external access-control layer such as
   Cloudflare Zero Trust.
 
-The first implementation phase is intentionally limited to LINE
-authentication. Matoca business operations are not implemented until the LINE
-refresh and LIFF issuance paths have complete unit and live integration test
-coverage.
+The initial implementation established LINE authentication first. Read-only
+Matoca operations and the Web UI now build on that authenticated client.
 
 This system cannot guarantee permanent operation. LINE logout, device
 revocation, account restrictions, token revocation, or private protocol
@@ -97,10 +171,10 @@ Phase 1:
 - pytest, pytest-asyncio, respx, coverage, Ruff, and mypy.
 - `fcntl.flock` and atomic file replacement for state persistence.
 
-Later phases:
+Web interface:
 
 - FastAPI and Uvicorn with one worker.
-- Jinja2 and HTMX for the initial Web UI.
+- Jinja2 server-rendered HTML.
 
 No database is required for the current single-user, single-instance design.
 
