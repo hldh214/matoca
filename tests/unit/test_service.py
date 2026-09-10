@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,7 @@ from matoca_service.service import (
 from matoca_service.state.models import AppState, LiffTokenState, LineState
 from matoca_service.state.store import JsonStateStore
 from matoca_service.storage.database import Database
-from matoca_service.storage.models import CollectionWrite, ShopObservation
+from matoca_service.storage.models import CollectionWrite, PollWindow, ShopObservation
 from matoca_service.storage.repositories import ShopRepository
 
 type JwtFactory = Callable[[dict[str, Any]], str]
@@ -148,6 +148,75 @@ async def test_merchant_snapshot_marks_partial_latest_cycle_stale(
     snapshot = await service.merchant_snapshot("sawayaka", force_catalog=True)
 
     assert snapshot.stale is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("now", "window", "age", "expected_stale"),
+    [
+        (datetime(2026, 9, 11, 8, tzinfo=UTC), None, timedelta(minutes=10), False),
+        (datetime(2026, 9, 11, 8, tzinfo=UTC), None, timedelta(minutes=11), True),
+        (
+            datetime(2026, 9, 11, 1, tzinfo=UTC),
+            PollWindow(start=time(9), end=time(11)),
+            timedelta(minutes=2),
+            False,
+        ),
+        (
+            datetime(2026, 9, 11, 1, tzinfo=UTC),
+            PollWindow(start=time(9), end=time(11)),
+            timedelta(minutes=3),
+            True,
+        ),
+        (
+            datetime(2026, 9, 11, 18, tzinfo=UTC),
+            PollWindow(start=time(9), end=time(11)),
+            timedelta(minutes=30),
+            False,
+        ),
+        (
+            datetime(2026, 9, 11, 18, tzinfo=UTC),
+            PollWindow(start=time(9), end=time(11)),
+            timedelta(minutes=31),
+            True,
+        ),
+    ],
+)
+async def test_merchant_snapshot_uses_current_poll_interval_for_staleness(
+    stored_service: tuple[MatocaService, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    now: datetime,
+    window: PollWindow | None,
+    age: timedelta,
+    expected_stale: bool,
+) -> None:
+    service, _ = stored_service
+    service._shops.save_cycle(
+        CollectionWrite(
+            merchant_key="sawayaka",
+            observed_at=now - age,
+            shops=[
+                ShopObservation(
+                    shop=Shop(id=3272, name="Synthetic Shop", is_open=False),
+                    list_fresh=True,
+                    detail_fresh=True,
+                )
+            ],
+        )
+    )
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            del cls
+            return now if tz is None else now.astimezone(tz)
+
+    monkeypatch.setattr(service._shops, "poll_window", lambda merchant_key, at: window)
+    monkeypatch.setattr("matoca_service.service.datetime", FixedDatetime)
+
+    snapshot = await service.merchant_snapshot("sawayaka")
+
+    assert snapshot.stale is expected_stale
 
 
 def test_queue_submission_requires_currently_issuable_shop() -> None:

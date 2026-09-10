@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
 
@@ -23,7 +23,6 @@ from matoca_service.storage.models import StoredShop
 from matoca_service.storage.repositories import ShopRepository
 
 T = TypeVar("T")
-SNAPSHOT_STALE_AFTER = timedelta(minutes=2)
 _LIST_IDENTITY_FIELDS = (
     "id",
     "name",
@@ -152,10 +151,11 @@ class MatocaService:
         self._database.initialize()
         self._shops = ShopRepository(self._database)
         self._collector = CollectionService(self, self._shops)
+        self._poll_schedule = PollSchedule(self._shops)
         self._collection_coordinator = CollectionCoordinator(
             self._registry,
             self._collector,
-            PollSchedule(self._shops),
+            self._poll_schedule,
             self._shops,
         )
         self._operation_lock = asyncio.Lock()
@@ -230,10 +230,9 @@ class MatocaService:
                 detail_timestamps.append(detail_at)
         latest_detail_at = max(detail_timestamps) if detail_timestamps else None
         stale = stale or any(not observation.detail_fresh for observation in latest_cycle)
-        if (
-            latest_detail_at is None
-            or datetime.now(tz=UTC) - latest_detail_at > SNAPSHOT_STALE_AFTER
-        ):
+        now = datetime.now(tz=UTC)
+        stale_after = self._poll_schedule.next_interval(merchant_key, now, False) * 2
+        if latest_detail_at is None or now - latest_detail_at > stale_after:
             stale = True
         merchant = self._merchant(merchant_key)
         return MerchantSnapshot(

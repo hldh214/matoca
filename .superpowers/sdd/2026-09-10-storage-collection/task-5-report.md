@@ -70,3 +70,48 @@ No live or destructive test marker was executed.
 ## Concerns
 
 None.
+
+## Fix Round 1
+
+### Changes
+
+- Replaced the fixed two-minute stale cutoff with twice `PollSchedule.next_interval()` at the current snapshot time.
+- Reused the same schedule instance for the collection coordinator and snapshot staleness calculation.
+- Added six SQLite-backed snapshot boundary cases for the five-minute no-history cadence, one-minute active-window cadence, and 15-minute outside-window cadence. Each verifies the exact two-interval boundary is fresh and the next minute is stale.
+
+### Covering Tests
+
+- `test_merchant_snapshot_uses_current_poll_interval_for_staleness`
+- `test_merchant_snapshot_marks_partial_latest_cycle_stale`
+
+### RED
+
+```text
+uv run pytest tests/unit/test_service.py::test_merchant_snapshot_uses_current_poll_interval_for_staleness -v
+2 failed, 4 passed in 0.95s
+```
+
+The no-history 10-minute boundary and outside-window 30-minute boundary were incorrectly stale under the fixed two-minute cutoff.
+
+### GREEN
+
+```text
+uv run pytest tests/unit/test_service.py::test_merchant_snapshot_uses_current_poll_interval_for_staleness tests/unit/test_service.py::test_merchant_snapshot_marks_partial_latest_cycle_stale -v
+7 passed in 0.79s
+```
+
+### Full Verification
+
+```text
+uv run pytest
+112 passed in 3.83s
+
+uv run ruff format --check src tests
+53 files already formatted
+
+uv run ruff check src tests
+All checks passed!
+
+uv run mypy src
+Success: no issues found in 31 source files
+```
