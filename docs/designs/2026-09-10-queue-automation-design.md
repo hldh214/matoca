@@ -132,8 +132,19 @@ the earliest observed open time and latest observed close time in the preceding 
 This window only controls collection frequency. It is not a reception-closing prediction and is
 never an input that causes an early queue submission.
 
-The merchant shop-list response is fetched once per merchant per cycle, then all returned shops
-are inserted in one transaction. The service does not issue one list request per shop.
+The captured API shape requires two read layers. The paginated shop-list endpoint supplies shop
+identity, coordinates, and `current_waiting`, but it does not supply `waiting_time`, `is_issuable`,
+`is_open`, or the live form. Each minute cycle therefore fetches the merchant's shop-list pages
+and then fetches one detail response per shop with concurrency limited to four. For Sawayaka this
+is approximately 35 read requests per minute during the effective window; La Ohana Yokohama
+Honmoku currently needs approximately two.
+
+The collector merges the list and detail results, then inserts the complete cycle in one short
+transaction. A failed detail stores null for fields that were not freshly observed and records a
+per-shop detail error; it does not copy an old estimate into a new observation. The cached shop
+record remains available to the UI with its own last-detail timestamp and stale label. HTTP 429
+honors `Retry-After` when present and otherwise applies bounded exponential backoff for that
+merchant. A backoff or partial cycle cannot trigger automated submission from stale detail data.
 
 Static catalog fields are refreshed at most once per day. Queue forms are not trusted as daily
 cache: shop detail is fetched when a manual form opens and again immediately before an automated
