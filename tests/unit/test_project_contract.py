@@ -1,3 +1,5 @@
+import subprocess
+import tomllib
 from pathlib import Path
 
 from matoca_service.config import LineConfig, MerchantRegistry, RuntimeSettings
@@ -71,3 +73,51 @@ def test_runtime_settings_use_explicit_line_and_database_paths() -> None:
     assert settings.line_client_file == Path("line_client.toml")
     assert settings.database_file == Path("data/matoca.db")
     assert not hasattr(settings, "config_file")
+
+
+def test_package_contract_includes_web_templates_and_static_assets() -> None:
+    result = subprocess.run(
+        ["git", "ls-files", "src/matoca_service/web"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+    expected = {
+        "src/matoca_service/web/templates/dashboard.html",
+        "src/matoca_service/web/templates/merchant.html",
+        "src/matoca_service/web/static/api.js",
+        "src/matoca_service/web/static/dashboard.css",
+        "src/matoca_service/web/static/join-form.js",
+        "src/matoca_service/web/static/merchant-selector.css",
+        "src/matoca_service/web/static/merchant.css",
+        "src/matoca_service/web/static/merchant.js",
+        "src/matoca_service/web/static/preferences.js",
+        "src/matoca_service/web/static/queue-status.js",
+        "src/matoca_service/web/static/shop-list.js",
+    }
+    tracked_files = set(result.stdout.splitlines())
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    wheel_packages = project["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+
+    assert wheel_packages == ["src/matoca_service"]
+    assert expected <= tracked_files
+
+
+def test_readme_documents_manual_console_behavior() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+    for phrase in (
+        "炭焼きレストラン さわやか",
+        "ラ・オハナ 横浜本牧",
+        "受付中のみ",
+        "公式目安",
+        "成人 2 人",
+        "子供 0 人",
+        "手動操作",
+        "店舗一覧は SQLite キャッシュから表示",
+        "現在の順番待ちは Matoca API から独立して更新",
+    ):
+        assert phrase in readme

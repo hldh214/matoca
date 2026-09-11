@@ -198,14 +198,6 @@ def create_app(
     async def merchants_api() -> list[MerchantSummary]:
         return dashboard_service.list_merchants()
 
-    @app.get("/api/merchants/{merchant_key}/snapshot", response_model=MerchantSnapshot)
-    async def merchant_snapshot_api(merchant_key: str, request: Request) -> MerchantSnapshot:
-        snapshot = await dashboard_service.merchant_snapshot(merchant_key)
-        timezone = parse_timezone(request.headers.get("x-timezone"))
-        return snapshot.model_copy(
-            update={"refreshed_at": localize_datetime(snapshot.refreshed_at, timezone)}
-        )
-
     @app.get("/api/merchants/{merchant_key}/console", response_model=MerchantConsoleData)
     async def merchant_console_api(merchant_key: str, request: Request) -> MerchantConsoleData:
         console = await dashboard_service.merchant_console(merchant_key)

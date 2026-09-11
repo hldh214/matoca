@@ -85,6 +85,28 @@ The default address is:
 http://127.0.0.1:48173
 ```
 
+## Manual Web Console
+
+The Web UI is a manual queue console for the supported merchants. The first page asks
+the user to choose a `加盟店`; it currently lists `炭焼きレストラン さわやか` and
+`ラ・オハナ 横浜本牧`.
+
+On a merchant page:
+
+- The initial filter is `受付中のみ`, so shops that can accept a queue request are shown
+  first without extra interaction.
+- Every shop row shows the current number of waiting groups and Matoca's `公式目安`.
+- Global party settings are available from the header. New installations default to
+  `成人 2 人` and `子供 0 人`; each shop's live form limits are still applied when the
+  join dialog opens.
+- Joining and cancelling are explicit `手動操作`. This phase does not schedule a future
+  arrival time or automatically submit a queue request.
+
+店舗一覧は SQLite キャッシュから表示され、バックグラウンド収集とは別に安全に閲覧
+できます。現在の順番待ちは Matoca API から独立して更新されるため、店舗一覧の再読込で
+進行中の順番待ちが消えることはありません。ヘッダーの更新ボタンは、必要なときだけ店舗
+情報の手動更新を要求します。
+
 For a private server, bind to the private interface used by Cloudflare Tunnel
 or another trusted reverse proxy. The application intentionally does
 not implement user login because the deployment is expected to be protected

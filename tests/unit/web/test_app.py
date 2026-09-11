@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from fastapi.routing import APIRoute
 
 from matoca_service.console import MerchantConsoleData, ShopConsoleItem
 from matoca_service.matoca.models import Shop, Waiting
@@ -213,12 +214,15 @@ async def test_merchant_page_renders_japanese_shop_console_shell() -> None:
             {"shop_id": 3272, "adult_count": 2, "child_count": 0},
         ),
         ("DELETE", "/api/merchants/sawayaka/waiting/125000001", None),
+        ("PUT", "/api/preferences", {"default_adult_count": 3, "default_child_count": 1}),
     ],
 )
+@pytest.mark.parametrize("origin", [None, "https://example.invalid"])
 async def test_state_changing_requests_reject_cross_origin(
     method: str,
     path: str,
     json: dict[str, int] | None,
+    origin: str | None,
 ) -> None:
     app = create_app(FakeDashboardService())
 
@@ -226,12 +230,8 @@ async def test_state_changing_requests_reject_cross_origin(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",
     ) as client:
-        response = await client.request(
-            method,
-            path,
-            json=json,
-            headers={"Origin": "https://example.invalid"},
-        )
+        headers = {"Origin": origin} if origin is not None else {}
+        response = await client.request(method, path, json=json, headers=headers)
 
     assert response.status_code == 403
     assert response.json() == {"detail": "この操作は許可されていません"}
@@ -256,23 +256,6 @@ async def test_preferences_api_reads_and_updates_party_defaults() -> None:
     assert read_response.json() == {"default_adult_count": 2, "default_child_count": 0}
     assert update_response.status_code == 200
     assert update_response.json() == {"default_adult_count": 3, "default_child_count": 1}
-
-
-@pytest.mark.asyncio
-async def test_preferences_api_rejects_missing_origin() -> None:
-    app = create_app(FakeDashboardService())
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://test",
-    ) as client:
-        missing_origin = await client.put(
-            "/api/preferences",
-            json={"default_adult_count": 3, "default_child_count": 1},
-        )
-
-    assert missing_origin.status_code == 403
-    assert missing_origin.json() == {"detail": "この操作は許可されていません"}
 
 
 @pytest.mark.asyncio
@@ -418,3 +401,37 @@ async def test_detail_apis_reject_non_positive_ids(path: str) -> None:
         response = await client.get(path)
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_obsolete_snapshot_api_is_removed() -> None:
+    app = create_app(FakeDashboardService())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/api/merchants/sawayaka/snapshot")
+
+    assert response.status_code == 404
+
+
+def test_preserved_api_routes_keep_response_models() -> None:
+    app = create_app(FakeDashboardService())
+    api_routes = {
+        (route.path, method): route.response_model
+        for route in app.routes
+        if isinstance(route, APIRoute)
+        for method in route.methods
+    }
+
+    assert api_routes[("/api/dashboard", "GET")] == DashboardData
+    assert api_routes[("/api/merchants/{merchant_key}/console", "GET")] == MerchantConsoleData
+    assert api_routes[("/api/shops/{shop_id}", "GET")] == Shop
+    assert api_routes[("/api/waiting/{waiting_id}", "GET")] == Waiting
+    assert api_routes[("/api/merchants/{merchant_key}/waiting", "GET")] == list[Waiting]
+    assert api_routes[("/api/merchants/{merchant_key}/waiting", "POST")] == Waiting
+    assert api_routes[("/api/merchants/{merchant_key}/waiting/{waiting_id}", "DELETE")] is None
+    assert api_routes[("/api/preferences", "GET")] == PartyPreferences
+    assert api_routes[("/api/preferences", "PUT")] == PartyPreferences
+    assert api_routes[("/api/merchants/{merchant_key}/refresh", "POST")] == MerchantSnapshot
