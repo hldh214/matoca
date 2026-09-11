@@ -284,6 +284,39 @@ async def test_preferences_api_returns_japanese_validation_errors(payload: objec
 
 
 @pytest.mark.asyncio
+async def test_preferences_api_returns_japanese_error_for_malformed_json() -> None:
+    app = create_app(FakeDashboardService())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.put(
+            "/api/preferences",
+            content=b'{"default_adult_count": 2',
+            headers={"Content-Type": "application/json", "Origin": "http://test"},
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "入力内容が正しくありません"}
+
+
+@pytest.mark.asyncio
+async def test_dashboard_api_retains_structured_validation_detail() -> None:
+    app = create_app(FakeDashboardService())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/api/dashboard", params={"page": 0})
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", "page"]
+    assert response.json()["detail"][0]["type"] == "greater_than_equal"
+
+
+@pytest.mark.asyncio
 async def test_dashboard_api_returns_structured_data() -> None:
     app = create_app(FakeDashboardService())
 

@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from json import JSONDecodeError
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -7,10 +8,10 @@ from urllib.parse import urlsplit
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi import Path as PathParameter
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 
 from matoca_service.config import RuntimeSettings
 from matoca_service.console import MerchantConsoleData
@@ -123,14 +124,6 @@ def create_app(
     app.mount("/static", StaticFiles(directory=WEB_ROOT / "static"), name="static")
     templates = Jinja2Templates(directory=WEB_ROOT / "templates")
 
-    @app.exception_handler(RequestValidationError)
-    async def request_validation_handler(
-        request: Request,
-        error: RequestValidationError,
-    ) -> JSONResponse:
-        del request, error
-        return JSONResponse(status_code=422, content={"detail": "入力内容が正しくありません"})
-
     @app.exception_handler(UnknownMerchantError)
     async def unknown_merchant_handler(
         request: Request,
@@ -179,11 +172,12 @@ def create_app(
         return await dashboard_service.party_preferences()
 
     @app.put("/api/preferences", response_model=PartyPreferences)
-    async def update_party_preferences_api(
-        party_preferences: PartyPreferences,
-        request: Request,
-    ) -> PartyPreferences:
+    async def update_party_preferences_api(request: Request) -> PartyPreferences | JSONResponse:
         require_same_origin(request)
+        try:
+            party_preferences = PartyPreferences.model_validate(await request.json())
+        except JSONDecodeError, UnicodeDecodeError, ValidationError:
+            return JSONResponse(status_code=422, content={"detail": "入力内容が正しくありません"})
         return await dashboard_service.update_party_preferences(party_preferences)
 
     @app.get("/api/shops/{shop_id}", response_model=Shop)
