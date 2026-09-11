@@ -9,6 +9,7 @@ import httpx
 import pytest
 import respx
 
+import matoca_service.service as service_module
 from matoca_service.collection.coordinator import CollectionCoordinator
 from matoca_service.collection.models import CollectedShop, CollectionCycle
 from matoca_service.collection.schedule import PollSchedule
@@ -33,7 +34,7 @@ from matoca_service.storage.models import (
     PollWindow,
     ShopObservation,
 )
-from matoca_service.storage.repositories import ShopRepository
+from matoca_service.storage.repositories import PreferenceRepository, ShopRepository
 
 type JwtFactory = Callable[[dict[str, Any]], str]
 
@@ -78,6 +79,33 @@ def stored_service(tmp_path: Path) -> tuple[MatocaService, list[str]]:
         )
     )
     return MatocaService(line_client_path, tmp_path / "state.json", database.path), []
+
+
+@pytest.mark.asyncio
+async def test_party_preferences_read_defaults_and_preserve_prediction_tolerances(
+    stored_service: tuple[MatocaService, list[str]],
+) -> None:
+    service, _ = stored_service
+    party_preferences_type = service_module.PartyPreferences
+
+    preferences = await service.party_preferences()
+
+    assert preferences.model_dump() == {
+        "default_adult_count": 2,
+        "default_child_count": 0,
+    }
+
+    updated = await service.update_party_preferences(
+        party_preferences_type(default_adult_count=3, default_child_count=1)
+    )
+
+    assert updated.model_dump() == {
+        "default_adult_count": 3,
+        "default_child_count": 1,
+    }
+    stored = PreferenceRepository(service._database).get()
+    assert (stored.default_adult_count, stored.default_child_count) == (3, 1)
+    assert (stored.early_tolerance_minutes, stored.model_error_minutes) == (15, 15)
 
 
 @pytest.mark.asyncio

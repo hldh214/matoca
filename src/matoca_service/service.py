@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import TypeVar
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic_core import PydanticCustomError
 
 from matoca_service.collection.coordinator import CollectionCoordinator
 from matoca_service.collection.models import CollectedShop, CollectionCycle, CollectionRateLimited
@@ -22,7 +23,8 @@ from matoca_service.matoca.models import CreateWaitingRequest, Shop, ShopOptions
 from matoca_service.state.store import JsonStateStore
 from matoca_service.storage.asyncio import run_storage
 from matoca_service.storage.database import Database
-from matoca_service.storage.repositories import ShopRepository
+from matoca_service.storage.models import UserPreferences
+from matoca_service.storage.repositories import PreferenceRepository, ShopRepository
 
 T = TypeVar("T")
 _LIST_IDENTITY_FIELDS = (
@@ -113,6 +115,23 @@ class QueueSubmission(BaseModel):
     in_advance_information: str = ""
 
 
+class PartyPreferences(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    default_adult_count: int
+    default_child_count: int
+
+    @field_validator("default_adult_count", "default_child_count")
+    @classmethod
+    def validate_party_count(cls, value: int) -> int:
+        if not 0 <= value <= 20:
+            raise PydanticCustomError(
+                "party_count_range",
+                "人数は0人から20人の範囲で指定してください",
+            )
+        return value
+
+
 def validate_queue_submission(
     shop: Shop,
     submission: QueueSubmission,
@@ -144,6 +163,7 @@ class MatocaService:
         self._database = Database(database_path)
         self._database.initialize()
         self._shops = ShopRepository(self._database)
+        self._preferences = PreferenceRepository(self._database)
         self._collector = CollectionService(self, self._shops)
         self._poll_schedule = PollSchedule(self._shops)
         self._collection_coordinator = CollectionCoordinator(
@@ -175,6 +195,31 @@ class MatocaService:
             )
             for key, merchant in self._registry.merchants.items()
         ]
+
+    async def party_preferences(self) -> PartyPreferences:
+        preferences = await run_storage(self._preferences.get)
+        return PartyPreferences(
+            default_adult_count=preferences.default_adult_count,
+            default_child_count=preferences.default_child_count,
+        )
+
+    async def update_party_preferences(
+        self, party_preferences: PartyPreferences
+    ) -> PartyPreferences:
+        current = await run_storage(self._preferences.get)
+        updated = await run_storage(
+            self._preferences.update,
+            UserPreferences(
+                default_adult_count=party_preferences.default_adult_count,
+                default_child_count=party_preferences.default_child_count,
+                early_tolerance_minutes=current.early_tolerance_minutes,
+                model_error_minutes=current.model_error_minutes,
+            ),
+        )
+        return PartyPreferences(
+            default_adult_count=updated.default_adult_count,
+            default_child_count=updated.default_child_count,
+        )
 
     async def merchant_snapshot(
         self,

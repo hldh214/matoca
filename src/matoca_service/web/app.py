@@ -19,6 +19,7 @@ from matoca_service.service import (
     MatocaService,
     MerchantSnapshot,
     MerchantSummary,
+    PartyPreferences,
     QueueSubmission,
     QueueUnavailableError,
     UnknownMerchantError,
@@ -47,6 +48,12 @@ def require_same_origin(request: Request) -> None:
 
 class DashboardService(Protocol):
     def list_merchants(self) -> list[MerchantSummary]: ...
+
+    async def party_preferences(self) -> PartyPreferences: ...
+
+    async def update_party_preferences(
+        self, party_preferences: PartyPreferences
+    ) -> PartyPreferences: ...
 
     async def merchant_snapshot(
         self,
@@ -157,6 +164,18 @@ def create_app(
         page: int = Query(default=1, ge=1),
     ) -> DashboardData:
         return await dashboard_service.dashboard(merchant, keyword, page)
+
+    @app.get("/api/preferences", response_model=PartyPreferences)
+    async def party_preferences_api() -> PartyPreferences:
+        return await dashboard_service.party_preferences()
+
+    @app.put("/api/preferences", response_model=PartyPreferences)
+    async def update_party_preferences_api(
+        party_preferences: PartyPreferences,
+        request: Request,
+    ) -> PartyPreferences:
+        require_same_origin(request)
+        return await dashboard_service.update_party_preferences(party_preferences)
 
     @app.get("/api/shops/{shop_id}", response_model=Shop)
     async def shop_detail_api(

@@ -8,11 +8,19 @@ import pytest
 
 from matoca_service.console import MerchantConsoleData, ShopConsoleItem
 from matoca_service.matoca.models import Shop, Waiting
-from matoca_service.service import DashboardData, MerchantSnapshot, MerchantSummary
+from matoca_service.service import (
+    DashboardData,
+    MerchantSnapshot,
+    MerchantSummary,
+    PartyPreferences,
+)
 from matoca_service.web.app import create_app
 
 
 class FakeDashboardService:
+    def __init__(self) -> None:
+        self.preferences = PartyPreferences(default_adult_count=2, default_child_count=0)
+
     def list_merchants(self) -> list[MerchantSummary]:
         return [
             MerchantSummary(
@@ -69,6 +77,13 @@ class FakeDashboardService:
                 )
             ],
         )
+
+    async def party_preferences(self) -> PartyPreferences:
+        return self.preferences
+
+    async def update_party_preferences(self, preferences: PartyPreferences) -> PartyPreferences:
+        self.preferences = preferences
+        return preferences
 
     async def dashboard(
         self,
@@ -200,6 +215,51 @@ async def test_state_changing_requests_reject_cross_origin(
 
     assert response.status_code == 403
     assert response.json() == {"detail": "この操作は許可されていません"}
+
+
+@pytest.mark.asyncio
+async def test_preferences_api_reads_and_updates_party_defaults() -> None:
+    app = create_app(FakeDashboardService())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        read_response = await client.get("/api/preferences")
+        update_response = await client.put(
+            "/api/preferences",
+            json={"default_adult_count": 3, "default_child_count": 1},
+            headers={"Origin": "http://test"},
+        )
+
+    assert read_response.status_code == 200
+    assert read_response.json() == {"default_adult_count": 2, "default_child_count": 0}
+    assert update_response.status_code == 200
+    assert update_response.json() == {"default_adult_count": 3, "default_child_count": 1}
+
+
+@pytest.mark.asyncio
+async def test_preferences_api_rejects_missing_origin_and_out_of_range_counts() -> None:
+    app = create_app(FakeDashboardService())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        missing_origin = await client.put(
+            "/api/preferences",
+            json={"default_adult_count": 3, "default_child_count": 1},
+        )
+        out_of_range = await client.put(
+            "/api/preferences",
+            json={"default_adult_count": 21, "default_child_count": 1},
+            headers={"Origin": "http://test"},
+        )
+
+    assert missing_origin.status_code == 403
+    assert missing_origin.json() == {"detail": "この操作は許可されていません"}
+    assert out_of_range.status_code == 422
+    assert out_of_range.json()["detail"][0]["msg"] == "人数は0人から20人の範囲で指定してください"
 
 
 @pytest.mark.asyncio
