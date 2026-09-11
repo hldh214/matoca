@@ -33,6 +33,7 @@ from matoca_service.storage.models import (
     MerchantPollState,
     PollWindow,
     ShopObservation,
+    UserPreferences,
 )
 from matoca_service.storage.repositories import PreferenceRepository, ShopRepository
 
@@ -94,6 +95,14 @@ async def test_party_preferences_read_defaults_and_preserve_prediction_tolerance
         "default_adult_count": 2,
         "default_child_count": 0,
     }
+    PreferenceRepository(service._database).update(
+        UserPreferences(
+            default_adult_count=2,
+            default_child_count=0,
+            early_tolerance_minutes=9,
+            model_error_minutes=24,
+        )
+    )
 
     updated = await service.update_party_preferences(
         party_preferences_type(default_adult_count=3, default_child_count=1)
@@ -105,7 +114,7 @@ async def test_party_preferences_read_defaults_and_preserve_prediction_tolerance
     }
     stored = PreferenceRepository(service._database).get()
     assert (stored.default_adult_count, stored.default_child_count) == (3, 1)
-    assert (stored.early_tolerance_minutes, stored.model_error_minutes) == (15, 15)
+    assert (stored.early_tolerance_minutes, stored.model_error_minutes) == (9, 24)
 
 
 @pytest.mark.asyncio

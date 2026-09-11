@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi import Path as PathParameter
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -121,6 +122,14 @@ def create_app(
     app = FastAPI(title="Matoca", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=WEB_ROOT / "static"), name="static")
     templates = Jinja2Templates(directory=WEB_ROOT / "templates")
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_handler(
+        request: Request,
+        error: RequestValidationError,
+    ) -> JSONResponse:
+        del request, error
+        return JSONResponse(status_code=422, content={"detail": "入力内容が正しくありません"})
 
     @app.exception_handler(UnknownMerchantError)
     async def unknown_merchant_handler(

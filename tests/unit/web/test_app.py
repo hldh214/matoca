@@ -239,7 +239,7 @@ async def test_preferences_api_reads_and_updates_party_defaults() -> None:
 
 
 @pytest.mark.asyncio
-async def test_preferences_api_rejects_missing_origin_and_out_of_range_counts() -> None:
+async def test_preferences_api_rejects_missing_origin() -> None:
     app = create_app(FakeDashboardService())
 
     async with httpx.AsyncClient(
@@ -250,16 +250,37 @@ async def test_preferences_api_rejects_missing_origin_and_out_of_range_counts() 
             "/api/preferences",
             json={"default_adult_count": 3, "default_child_count": 1},
         )
-        out_of_range = await client.put(
-            "/api/preferences",
-            json={"default_adult_count": 21, "default_child_count": 1},
-            headers={"Origin": "http://test"},
-        )
 
     assert missing_origin.status_code == 403
     assert missing_origin.json() == {"detail": "この操作は許可されていません"}
-    assert out_of_range.status_code == 422
-    assert out_of_range.json()["detail"][0]["msg"] == "人数は0人から20人の範囲で指定してください"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"default_adult_count": 2},
+        {"default_adult_count": "two", "default_child_count": 1},
+        {"default_adult_count": 2.5, "default_child_count": 1},
+        {"default_adult_count": 2, "default_child_count": 1, "unexpected": True},
+        {"default_adult_count": 21, "default_child_count": 1},
+    ],
+)
+async def test_preferences_api_returns_japanese_validation_errors(payload: object) -> None:
+    app = create_app(FakeDashboardService())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.put(
+            "/api/preferences",
+            json=payload,
+            headers={"Origin": "http://test"},
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "入力内容が正しくありません"}
 
 
 @pytest.mark.asyncio
