@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from matoca_service.config import RuntimeSettings
+from matoca_service.console import MerchantConsoleData
 from matoca_service.matoca.models import Shop, Waiting
 from matoca_service.service import (
     DashboardData,
@@ -53,6 +54,8 @@ class DashboardService(Protocol):
         *,
         force_catalog: bool = False,
     ) -> MerchantSnapshot: ...
+
+    async def merchant_console(self, merchant_key: str) -> MerchantConsoleData: ...
 
     async def dashboard(
         self,
@@ -179,6 +182,28 @@ def create_app(
         timezone = parse_timezone(request.headers.get("x-timezone"))
         return snapshot.model_copy(
             update={"refreshed_at": localize_datetime(snapshot.refreshed_at, timezone)}
+        )
+
+    @app.get("/api/merchants/{merchant_key}/console", response_model=MerchantConsoleData)
+    async def merchant_console_api(merchant_key: str, request: Request) -> MerchantConsoleData:
+        console = await dashboard_service.merchant_console(merchant_key)
+        timezone = parse_timezone(request.headers.get("x-timezone"))
+        return console.model_copy(
+            update={
+                "updated_at": localize_datetime(console.updated_at, timezone),
+                "shops": [
+                    shop.model_copy(
+                        update={
+                            "updated_at": (
+                                localize_datetime(shop.updated_at, timezone)
+                                if shop.updated_at is not None
+                                else None
+                            )
+                        }
+                    )
+                    for shop in console.shops
+                ],
+            }
         )
 
     @app.post("/api/merchants/{merchant_key}/refresh", response_model=MerchantSnapshot)

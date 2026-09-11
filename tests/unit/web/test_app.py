@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from matoca_service.console import MerchantConsoleData, ShopConsoleItem
 from matoca_service.matoca.models import Shop, Waiting
 from matoca_service.service import DashboardData, MerchantSnapshot, MerchantSummary
 from matoca_service.web.app import create_app
@@ -39,6 +40,34 @@ class FakeDashboardService:
             refreshed_at=datetime(2026, 9, 10, 12, tzinfo=UTC),
             shops=[],
             waiting=[],
+        )
+
+    async def merchant_console(self, merchant_key: str) -> MerchantConsoleData:
+        assert merchant_key == "sawayaka"
+        return MerchantConsoleData(
+            merchant=MerchantSummary(key="sawayaka", name="炭焼きレストラン さわやか"),
+            updated_at=datetime(2026, 9, 10, 8, tzinfo=UTC),
+            stale=False,
+            available_count=1,
+            total_count=1,
+            shops=[
+                ShopConsoleItem(
+                    id=3272,
+                    name="Synthetic Shop",
+                    sub_name=None,
+                    address=None,
+                    image_url=None,
+                    current_waiting=3,
+                    official_waiting_minutes=20,
+                    official_waiting_is_more=False,
+                    status="available",
+                    status_label="受付可能",
+                    can_join=True,
+                    stale=False,
+                    updated_at=datetime(2026, 9, 10, 8, tzinfo=UTC),
+                    forms=None,
+                )
+            ],
         )
 
     async def dashboard(
@@ -189,6 +218,25 @@ async def test_dashboard_api_returns_structured_data() -> None:
     assert response.status_code == 200
     assert response.json()["shops"][0]["id"] == 3278
     assert response.json()["page"] == 2
+
+
+@pytest.mark.asyncio
+async def test_cached_console_api_localizes_observed_timestamps() -> None:
+    app = create_app(FakeDashboardService())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(
+            "/api/merchants/sawayaka/console",
+            headers={"X-Timezone": "America/New_York"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["shops"][0]["status_label"] == "受付可能"
+    assert response.json()["updated_at"].endswith("-04:00")
+    assert response.json()["shops"][0]["updated_at"].endswith("-04:00")
 
 
 @pytest.mark.asyncio

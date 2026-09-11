@@ -12,6 +12,8 @@ from matoca_service.collection.models import CollectedShop, CollectionCycle, Col
 from matoca_service.collection.schedule import PollSchedule
 from matoca_service.collection.service import CollectionService
 from matoca_service.config import LineConfig, MerchantConfig, MerchantRegistry
+from matoca_service.console import MerchantConsoleData, build_console
+from matoca_service.console import MerchantSummary as MerchantSummary
 from matoca_service.line.liff import LiffClient
 from matoca_service.line.refresh import LineRefreshClient
 from matoca_service.line.token_manager import TokenManager
@@ -88,14 +90,6 @@ class DashboardData(BaseModel):
     page: int = 1
     shops: list[Shop]
     waiting: list[Waiting]
-
-
-class MerchantSummary(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    key: str
-    name: str
-    cover_image_url: str | None = None
 
 
 class MerchantSnapshot(BaseModel):
@@ -194,6 +188,25 @@ class MatocaService:
         if force_catalog or state is None:
             await self._collection_coordinator.collect(merchant_key, requested_at=requested_at)
         return await run_storage(self._stored_snapshot, merchant_key)
+
+    async def merchant_console(self, merchant_key: str) -> MerchantConsoleData:
+        merchant_config = self._merchant(merchant_key)
+        stored_shops, catalog, poll_state = await run_storage(self._shops.snapshot, merchant_key)
+        return build_console(
+            MerchantSummary(
+                key=merchant_key,
+                name=merchant_config.name,
+                cover_image_url=(
+                    str(merchant_config.cover_image_url)
+                    if merchant_config.cover_image_url is not None
+                    else None
+                ),
+            ),
+            stored_shops,
+            catalog,
+            poll_state,
+            datetime.now(tz=UTC),
+        )
 
     def _stored_snapshot(
         self,
