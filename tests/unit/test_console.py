@@ -1,12 +1,19 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta, tzinfo
 
 import pytest
 
-from matoca_service.console import console_item
+from matoca_service.console import MerchantSummary, build_console, console_item
 from matoca_service.matoca.models import Shop, ShopForms, WaitingEstimate
 from matoca_service.service import MatocaService
 from matoca_service.storage.database import Database
-from matoca_service.storage.models import CollectionWrite, ShopObservation
+from matoca_service.storage.models import (
+    CatalogState,
+    CollectionWrite,
+    MerchantPollState,
+    PollWindow,
+    ShopObservation,
+    StoredShop,
+)
 from matoca_service.storage.repositories import ShopRepository
 
 
@@ -82,11 +89,65 @@ def test_console_item_preserves_official_observation_without_prediction_fields()
     assert "prediction" not in item.model_dump()
 
 
+@pytest.mark.parametrize(
+    ("catalog_age", "detail_age", "expected_stale"),
+    [
+        (timedelta(minutes=10), timedelta(minutes=10), False),
+        (timedelta(minutes=11), timedelta(minutes=10), True),
+        (timedelta(minutes=10), timedelta(minutes=11), True),
+    ],
+)
+def test_console_stales_catalog_or_oldest_detail_after_poll_threshold(
+    catalog_age: timedelta,
+    detail_age: timedelta,
+    expected_stale: bool,
+) -> None:
+    now = datetime(2026, 9, 11, 8, tzinfo=UTC)
+    shop = Shop(id=1, name="A", is_open=True, is_issuable=True)
+    stored_shop = StoredShop(
+        merchant_key="sawayaka",
+        shop=shop,
+        observation=ShopObservation(
+            shop=shop,
+            list_fresh=True,
+            detail_fresh=True,
+            observed_at=now - detail_age,
+        ),
+        last_detail_at=now - detail_age,
+    )
+
+    console = build_console(
+        MerchantSummary(key="sawayaka", name="Synthetic Merchant"),
+        [stored_shop],
+        CatalogState(observed_at=now - catalog_age, complete=True),
+        MerchantPollState(merchant_key="sawayaka"),
+        now,
+        stale_after=timedelta(minutes=10),
+    )
+
+    assert console.stale is expected_stale
+    assert (console.shops[0].status, console.shops[0].status_label, console.shops[0].can_join) == (
+        ("stale", "更新待ち", False) if expected_stale else ("available", "受付可能", True)
+    )
+
+
 @pytest.mark.asyncio
-async def test_merchant_console_reads_only_the_stored_sqlite_snapshot(
+@pytest.mark.parametrize(
+    ("age", "expected_status", "expected_label", "expected_stale"),
+    [
+        (timedelta(minutes=2), "available", "受付可能", False),
+        (timedelta(minutes=3), "stale", "更新待ち", True),
+    ],
+)
+async def test_merchant_console_uses_sqlite_and_current_poll_interval_for_staleness(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
+    age: timedelta,
+    expected_status: str,
+    expected_label: str,
+    expected_stale: bool,
 ) -> None:
+    now = datetime(2026, 9, 11, 8, tzinfo=UTC)
     line_client_path = tmp_path / "line_client.toml"
     line_client_path.write_text(
         "\n".join(
@@ -105,7 +166,7 @@ async def test_merchant_console_reads_only_the_stored_sqlite_snapshot(
     ShopRepository(database).save_cycle(
         CollectionWrite(
             merchant_key="sawayaka",
-            observed_at=datetime(2026, 9, 10, 8, tzinfo=UTC),
+            observed_at=now - age,
             shops=[
                 ShopObservation(
                     shop=Shop(
@@ -128,8 +189,25 @@ async def test_merchant_console_reads_only_the_stored_sqlite_snapshot(
 
     monkeypatch.setattr(service, "_authenticated_read", unexpected)
     monkeypatch.setattr(service, "read_collection_cycle", unexpected)
+    monkeypatch.setattr(
+        service._shops,
+        "poll_window",
+        lambda merchant_key, at: PollWindow(start=time(16, 30), end=time(17, 30)),
+    )
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            del cls
+            return now if tz is None else now.astimezone(tz)
+
+    monkeypatch.setattr("matoca_service.service.datetime", FixedDatetime)
 
     console = await service.merchant_console("sawayaka")
 
     assert console.shops[0].id == 3272
-    assert console.shops[0].status_label == "受付可能"
+    assert console.stale is expected_stale
+    assert (console.shops[0].status, console.shops[0].status_label) == (
+        expected_status,
+        expected_label,
+    )

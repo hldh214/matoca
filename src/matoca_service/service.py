@@ -191,21 +191,33 @@ class MatocaService:
 
     async def merchant_console(self, merchant_key: str) -> MerchantConsoleData:
         merchant_config = self._merchant(merchant_key)
-        stored_shops, catalog, poll_state = await run_storage(self._shops.snapshot, merchant_key)
-        return build_console(
-            MerchantSummary(
-                key=merchant_key,
-                name=merchant_config.name,
-                cover_image_url=(
-                    str(merchant_config.cover_image_url)
-                    if merchant_config.cover_image_url is not None
-                    else None
-                ),
+        now = datetime.now(tz=UTC)
+        merchant = MerchantSummary(
+            key=merchant_key,
+            name=merchant_config.name,
+            cover_image_url=(
+                str(merchant_config.cover_image_url)
+                if merchant_config.cover_image_url is not None
+                else None
             ),
+        )
+        return await run_storage(self._stored_console, merchant, merchant_key, now)
+
+    def _stored_console(
+        self,
+        merchant: MerchantSummary,
+        merchant_key: str,
+        now: datetime,
+    ) -> MerchantConsoleData:
+        stored_shops, catalog, poll_state = self._shops.snapshot(merchant_key)
+        stale_after = self._poll_schedule.next_interval(merchant_key, now, False) * 2
+        return build_console(
+            merchant,
             stored_shops,
             catalog,
             poll_state,
-            datetime.now(tz=UTC),
+            now,
+            stale_after=stale_after,
         )
 
     def _stored_snapshot(
