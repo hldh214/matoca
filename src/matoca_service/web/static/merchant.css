@@ -84,6 +84,7 @@
 .dialog-close { position: absolute; top: 16px; right: 16px; width: 36px; height: 36px; border: 0; border-radius: 6px; color: #3c403b; background: #eff0ed; font-size: 20px; cursor: pointer; }
 .dialog-status { margin: 0 0 20px; color: #666a64; font-size: 13px; }
 .counter-row { min-height: 64px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid #e0e2dd; }
+.counter-row[hidden] { display: none; }
 .counter-row label { font-weight: 700; }
 .stepper { display: grid; grid-template-columns: 42px 48px 42px; align-items: center; text-align: center; }
 .stepper button { width: 42px; height: 38px; border: 1px solid #c9ccc5; border-radius: 4px; color: #2d302c; background: #ffffff; font-size: 18px; cursor: pointer; }

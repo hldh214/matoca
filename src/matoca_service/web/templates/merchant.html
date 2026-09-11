@@ -46,8 +46,9 @@
       <form method="dialog" id="settings-form">
         <button class="dialog-close" type="button" aria-label="閉じる">×</button>
         <h2>設定</h2>
-        <div class="counter-row"><label for="settings-adult-count">大人</label><div class="stepper"><button type="button" aria-label="大人を減らす">−</button><output id="settings-adult-count">2</output><button type="button" aria-label="大人を増やす">＋</button></div></div>
-        <div class="counter-row"><label for="settings-child-count">子ども</label><div class="stepper"><button type="button" aria-label="子どもを減らす">−</button><output id="settings-child-count">0</output><button type="button" aria-label="子どもを増やす">＋</button></div></div>
+        <div class="counter-row"><label for="settings-adult-count">大人</label><div class="stepper"><button type="button" data-preference-step="adult" data-delta="-1" aria-label="大人を減らす">−</button><output id="settings-adult-count">2</output><button type="button" data-preference-step="adult" data-delta="1" aria-label="大人を増やす">＋</button></div></div>
+        <div class="counter-row"><label for="settings-child-count">子ども</label><div class="stepper"><button type="button" data-preference-step="child" data-delta="-1" aria-label="子どもを減らす">−</button><output id="settings-child-count">0</output><button type="button" data-preference-step="child" data-delta="1" aria-label="子どもを増やす">＋</button></div></div>
+        <p id="settings-error" class="form-error" role="alert"></p>
         <button type="submit" class="primary-button">設定を保存</button>
       </form>
     </dialog>
