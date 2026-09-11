@@ -72,7 +72,7 @@ export class JoinForm {
       return;
     }
     this.limits = {...forms};
-    const childHidden = forms.max_child === 0 || forms.is_confirm_child === false;
+    const childHidden = forms.max_child === 0;
     this.document.querySelector("#child-count").closest(".counter-row").hidden = childHidden;
     if (childHidden) this.limits.max_child = this.limits.min_child = 0;
     this.counts = {adult: this.clamp("adult", defaults.default_adult_count),

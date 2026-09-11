@@ -13,6 +13,7 @@ import pytest
         "stale_waiting_cannot_restore_cancelled_queue",
         "settings_only_change_next_dialog",
         "live_detail_clamps_and_hides_child",
+        "positive_child_limit_remains_supported_without_confirmation_flag",
         "sole_enabled_confirmation_is_selected",
         "unsupported_confirmations_block_submit",
         "representable_choices_require_selection",
@@ -20,6 +21,7 @@ import pytest
         "upstream_text_and_errors_are_safe",
         "detail_failure_never_submits_cached_form",
         "stale_preferences_cannot_overwrite_saved_defaults",
+        "reopened_settings_ignore_the_previous_response",
         "malformed_confirmations_are_not_silently_ignored",
     ],
 )

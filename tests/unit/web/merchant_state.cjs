@@ -219,6 +219,19 @@ const cases = {
     assert.deepEqual(JSON.parse(creation.body), {shop_id: 1, adult_count: 1, child_count: 0, answer1: 2, answer2: null, in_advance_information: ''});
     assert.ok(app.state.calls.some((call) => call.url === '/api/shops/1?merchant=sawayaka'));
   },
+  async positive_child_limit_remains_supported_without_confirmation_flag() {
+    const app = await setup({preferences: {default_adult_count: 2, default_child_count: 3}});
+    app.state.detail.forms = forms({min_child: 1, max_child: 2, is_confirm_child: false});
+    await app.click('.join-button');
+    assert.equal(app.get('#child-count').closest('.counter-row').hidden, false);
+    assert.equal(app.get('#child-count').textContent, '2');
+    await app.click('[data-step="child"][data-delta="-1"]');
+    assert.equal(app.get('#child-count').textContent, '1');
+    await app.submit('#join-form');
+    const creation = app.state.calls.find((call) => call.method === 'POST' && call.url.endsWith('/waiting'));
+    assert.ok(creation, 'Supported child counts must not block submission');
+    assert.equal(JSON.parse(creation.body).child_count, 1);
+  },
   async sole_enabled_confirmation_is_selected() {
     const app = await setup(); await app.click('.join-button'); const select = app.get('[data-answer="1"]');
     assert.equal(select.value, '2'); assert.match(select.textContent, /了承しました/); assert.doesNotMatch(select.textContent, /無効な選択肢/);
@@ -278,6 +291,30 @@ const cases = {
     await app.get('#join-dialog').close(); await app.click('.join-button');
     assert.equal(app.get('#adult-count').textContent, '3');
     assert.equal(app.get('#child-count').textContent, '1');
+  },
+  async reopened_settings_ignore_the_previous_response() {
+    for (const staleStatus of [200, 503]) {
+      const app = await setup(), first = deferred(), second = deferred();
+      app.state.pendingPreferences = first.promise;
+      const firstOpen = app.click('#settings-button'); await flush();
+      assert.equal(app.get('#settings-dialog').open, true);
+      await app.get('#settings-dialog').close();
+      app.state.pendingPreferences = second.promise;
+      const secondOpen = app.click('#settings-button'); await flush();
+      assert.equal(app.get('#settings-dialog').open, true, 'Settings must reopen while the previous GET is pending');
+      assert.equal(app.state.calls.filter((call) => call.url === '/api/preferences').length, 2);
+      second.resolve(response({default_adult_count: 4, default_child_count: 2})); await secondOpen;
+      assert.equal(app.get('#settings-adult-count').textContent, '4');
+      await app.click('[data-preference-step="adult"][data-delta="1"]');
+      first.resolve(response({default_adult_count: 2, default_child_count: 0}, staleStatus)); await firstOpen;
+      assert.equal(app.get('#settings-adult-count').textContent, '5');
+      assert.equal(app.get('#settings-child-count').textContent, '2');
+      assert.equal(app.get('#settings-error').textContent, '');
+      assert.equal(app.get('#settings-form').querySelector('[type="submit"]').disabled, false);
+      await app.get('#settings-dialog').close(); await app.click('.join-button');
+      assert.equal(app.get('#adult-count').textContent, '4', 'Stale GET must not replace the newest global defaults');
+      assert.equal(app.get('#child-count').textContent, '2');
+    }
   },
   async malformed_confirmations_are_not_silently_ignored() {
     const app = await setup();
