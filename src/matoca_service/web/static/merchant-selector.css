@@ -1,11 +1,36 @@
-.merchant-photo {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+.merchant-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
 }
 
-.merchant-photo-la_ohana_yokohamahonmoku {
-  padding: 18px;
-  object-fit: contain;
-  background: #fff;
+.merchant-card {
+  display: grid;
+  grid-template-columns: minmax(180px, 42%) 1fr;
+  min-height: 216px;
+  overflow: hidden;
+  color: inherit;
+  background: #ffffff;
+  border: 1px solid #dadcd7;
+  border-radius: 8px;
+  text-decoration: none;
+}
+
+.merchant-card:focus-visible { outline: 3px solid rgb(183 48 43 / 30%); outline-offset: 3px; }
+
+.merchant-photo { width: 100%; height: 100%; min-height: 216px; object-fit: cover; background: #eceee9; }
+
+.merchant-photo-la_ohana_yokohamahonmoku { padding: 18px; object-fit: contain; background: #ffffff; }
+
+.merchant-copy { padding: 28px; display: flex; flex-direction: column; justify-content: space-between; }
+
+.merchant-copy h2 { margin: 0; font-size: 20px; line-height: 1.5; }
+
+.merchant-copy strong { color: #ad302b; font-size: 14px; }
+
+@media (max-width: 760px) {
+  .merchant-grid { grid-template-columns: 1fr; }
+  .merchant-card { grid-template-columns: 1fr; min-height: 0; }
+  .merchant-photo { min-height: 168px; height: 168px; }
+  .merchant-copy { min-height: 118px; padding: 20px; }
 }

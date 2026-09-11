@@ -3,19 +3,18 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Matoca | ブランドを選択</title>
+    <title>Matoca | 加盟店を選ぶ</title>
     <link rel="stylesheet" href="{{ url_for('static', path='/dashboard.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', path='/merchant-selector.css') }}">
   </head>
   <body>
     <header class="app-header">
       <a class="wordmark" href="/">Matoca</a>
-      <span class="system-indicator"><i></i> 接続中</span>
     </header>
     <main class="selector-main">
       <div class="page-title">
         <p>順番待ちサービス</p>
-        <h1>ブランドを選択</h1>
+        <h1>利用する加盟店を選ぶ</h1>
       </div>
       <div class="merchant-grid">
         {% for merchant in merchants %}
@@ -26,7 +25,6 @@
               <div class="merchant-photo" role="img" aria-label="{{ merchant.name }}"></div>
             {% endif %}
             <div class="merchant-copy">
-              <span>対応ブランド</span>
               <h2>{{ merchant.name }}</h2>
               <strong>店舗を見る <span aria-hidden="true">→</span></strong>
             </div>

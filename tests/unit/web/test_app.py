@@ -154,12 +154,13 @@ async def test_home_page_renders_japanese_merchant_selector_without_tokens() -> 
         response = await client.get("/")
 
     assert response.status_code == 200
-    assert "ブランドを選択" in response.text
+    assert "利用する加盟店を選ぶ" in response.text
     assert "炭焼きレストラン さわやか" in response.text
     assert "/merchants/sawayaka" in response.text
     assert "ラ・オハナ 横浜本牧" in response.text
     assert "/merchants/la_ohana_yokohamahonmoku" in response.text
     assert 'src="https://example.test/la-ohana.png"' in response.text
+    assert "ブランド" not in response.text
     assert "access_token" not in response.text
     assert "liff-secret" not in response.text
 
@@ -175,11 +176,30 @@ async def test_merchant_page_renders_japanese_shop_console_shell() -> None:
         response = await client.get("/merchants/sawayaka")
 
     assert response.status_code == 200
+    for element_id in (
+        "settings-button",
+        "refresh-button",
+        "current-queue",
+        "shop-filter",
+        "available-count",
+        "total-count",
+        "shop-search",
+        "shop-list",
+        "updated-at",
+        "join-dialog",
+        "settings-dialog",
+        "cancel-dialog",
+    ):
+        assert f'id="{element_id}"' in response.text
     assert "受付可能" in response.text
-    assert "すべての店舗" in response.text
+    assert "すべて" in response.text
     assert "現在の順番待ち" in response.text
-    assert "店舗名・地域で検索" in response.text
-    assert response.text.count('class="dialog-close" type="button"') == 2
+    assert "公式目安" in response.text
+    assert "設定" in response.text
+    assert "地域別" not in response.text
+    assert "自動" not in response.text
+    assert "予測" not in response.text
+    assert response.text.count('class="dialog-close" type="button"') == 3
 
 
 @pytest.mark.asyncio
