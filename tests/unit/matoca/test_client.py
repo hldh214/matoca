@@ -108,6 +108,33 @@ async def test_get_shop_reads_content_shop(merchant: MerchantConfig) -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_get_shop_sends_store_coordinates_for_area_validation(
+    merchant: MerchantConfig,
+) -> None:
+    route = respx.get("https://admin.junbanmachi.jp/liff/shops/3272").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "code": 200,
+                "content": {"shop": {"id": 3272, "name": "synthetic merchant"}},
+            },
+        )
+    )
+
+    async with httpx.AsyncClient() as http:
+        await MatocaClient(merchant, http, "synthetic-liff").get_shop(
+            3272,
+            lat=34.7042983,
+            lng=137.7344733,
+        )
+
+    assert route.calls[0].request.url.params["lat"] == "34.7042983"
+    assert route.calls[0].request.url.params["lng"] == "137.7344733"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_waiting_parses_non_empty_content(merchant: MerchantConfig) -> None:
     respx.get("https://admin.junbanmachi.jp/liff/waiting").mock(
         return_value=httpx.Response(

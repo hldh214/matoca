@@ -112,10 +112,22 @@ class MatocaClient:
             shops.extend(page_shops)
         return ShopCatalog(shops, complete=False)
 
-    async def get_shop(self, shop_id: int) -> Shop:
+    async def get_shop(
+        self,
+        shop_id: int,
+        *,
+        lat: str | float | None = None,
+        lng: str | float | None = None,
+    ) -> Shop:
+        params: dict[str, str | float] = {}
+        if lat is not None:
+            params["lat"] = lat
+        if lng is not None:
+            params["lng"] = lng
         response = await self._http.get(
             f"{self._base_url}/liff/shops/{shop_id}",
             headers=self._headers,
+            params=params,
         )
         payload = await self._json(response)
         content = payload.get("content")

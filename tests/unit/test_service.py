@@ -65,6 +65,8 @@ def stored_service(tmp_path: Path) -> tuple[MatocaService, list[str]]:
                     shop=Shop(
                         id=3272,
                         name="Synthetic Shop",
+                        lat=34.7042983,
+                        lng=137.7344733,
                         current_waiting=12,
                         is_open=True,
                         is_issuable=True,
@@ -96,6 +98,28 @@ async def test_merchant_snapshot_uses_database_without_upstream_request(
     assert snapshot.shops[0].id == 3272
     assert snapshot.refreshed_at == datetime(2026, 9, 10, 8, tzinfo=UTC)
     assert upstream_calls == []
+
+
+@pytest.mark.asyncio
+async def test_shop_detail_uses_stored_shop_coordinates(
+    stored_service: tuple[MatocaService, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, _ = stored_service
+    client = FakeCycleClient(
+        [],
+        {3272: Shop(id=3272, name="Detail", is_open=True, is_issuable=True)},
+    )
+    client.events.append("list")
+
+    async def authenticated_read(merchant_key: str, operation: Any) -> Any:
+        assert merchant_key == "sawayaka"
+        return await operation(client)
+
+    monkeypatch.setattr(service, "_authenticated_read", authenticated_read)
+
+    await service.shop_detail("sawayaka", 3272)
+
+    assert client.detail_locations[3272] == ("34.7042983", "137.7344733")
 
 
 @pytest.mark.asyncio
@@ -445,6 +469,7 @@ class FakeCycleClient:
         self.details = details
         self.detail_error = detail_error
         self.events: list[str] = []
+        self.detail_locations: dict[int, tuple[str | float | None, str | float | None]] = {}
         self.active_details = 0
         self.max_active_details = 0
 
@@ -455,8 +480,15 @@ class FakeCycleClient:
     async def read_shop_catalog(self) -> ShopCatalog:
         return ShopCatalog(await self.list_all_shops(), complete=True)
 
-    async def get_shop(self, shop_id: int) -> Shop:
+    async def get_shop(
+        self,
+        shop_id: int,
+        *,
+        lat: str | float | None = None,
+        lng: str | float | None = None,
+    ) -> Shop:
         assert self.events[0] == "list"
+        self.detail_locations[shop_id] = (lat, lng)
         self.active_details += 1
         self.max_active_details = max(self.max_active_details, self.active_details)
         try:
@@ -501,7 +533,14 @@ class RetryRaceClient:
     async def read_shop_catalog(self) -> ShopCatalog:
         return ShopCatalog(await self.list_all_shops(), complete=True)
 
-    async def get_shop(self, shop_id: int) -> Shop:
+    async def get_shop(
+        self,
+        shop_id: int,
+        *,
+        lat: str | float | None = None,
+        lng: str | float | None = None,
+    ) -> Shop:
+        del lat, lng
         self.active_details += 1
         self.max_active_details = max(self.max_active_details, self.active_details)
         try:
@@ -533,7 +572,14 @@ class RetryRaceClient:
 
 
 class SimultaneousAuthRetryClient(RetryRaceClient):
-    async def get_shop(self, shop_id: int) -> Shop:
+    async def get_shop(
+        self,
+        shop_id: int,
+        *,
+        lat: str | float | None = None,
+        lng: str | float | None = None,
+    ) -> Shop:
+        del lat, lng
         self.active_details += 1
         self.max_active_details = max(self.max_active_details, self.active_details)
         try:
@@ -558,7 +604,14 @@ class PrimaryWaitingFailureClient(SimultaneousAuthRetryClient):
         super().__init__()
         self.waiting_failed = asyncio.Event()
 
-    async def get_shop(self, shop_id: int) -> Shop:
+    async def get_shop(
+        self,
+        shop_id: int,
+        *,
+        lat: str | float | None = None,
+        lng: str | float | None = None,
+    ) -> Shop:
+        del lat, lng
         self.active_details += 1
         self.max_active_details = max(self.max_active_details, self.active_details)
         try:
@@ -598,6 +651,8 @@ async def test_read_collection_cycle_enriches_list_shops_with_at_most_four_detai
             name=f"List {shop_id}",
             address=f"Address {shop_id}",
             current_waiting=shop_id,
+            lat=34 + shop_id / 100,
+            lng=137 + shop_id / 100,
         )
         for shop_id in range(1, 7)
     ]
@@ -624,6 +679,9 @@ async def test_read_collection_cycle_enriches_list_shops_with_at_most_four_detai
     assert all(item.detail_fresh for item in cycle.shops)
     assert cycle.waiting == [Waiting(id=42)]
     assert service.client.max_active_details == 4
+    assert service.client.detail_locations == {
+        shop_id: (34 + shop_id / 100, 137 + shop_id / 100) for shop_id in range(1, 7)
+    }
 
 
 @pytest.mark.asyncio
@@ -718,7 +776,14 @@ async def test_detail_429_persists_partial_evidence_and_durable_backoff(tmp_path
             )
             self.launched: list[int] = []
 
-        async def get_shop(self, shop_id: int) -> Shop:
+        async def get_shop(
+            self,
+            shop_id: int,
+            *,
+            lat: str | float | None = None,
+            lng: str | float | None = None,
+        ) -> Shop:
+            del lat, lng
             self.launched.append(shop_id)
             if shop_id == 2:
                 error = status_error(429)

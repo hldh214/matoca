@@ -243,9 +243,10 @@ class MatocaService:
 
     async def shop_detail(self, merchant_key: str, shop_id: int) -> Shop:
         async with self._operation_lock:
+            lat, lng = await run_storage(self._stored_shop_coordinates, merchant_key, shop_id)
             return await self._authenticated_read(
                 merchant_key,
-                lambda client: client.get_shop(shop_id),
+                lambda client: client.get_shop(shop_id, lat=lat, lng=lng),
             )
 
     async def waiting_detail(self, merchant_key: str, waiting_id: int) -> Waiting:
@@ -280,7 +281,11 @@ class MatocaService:
                                 _without_detail(base_shop), True, False, "rate_limited"
                             )
                         try:
-                            detail_shop = await client.get_shop(base_shop.id)
+                            detail_shop = await client.get_shop(
+                                base_shop.id,
+                                lat=base_shop.lat,
+                                lng=base_shop.lng,
+                            )
                         except httpx.HTTPStatusError as error:
                             if error.response.status_code in {401, 403}:
                                 raise
@@ -347,6 +352,13 @@ class MatocaService:
     async def create_waiting(self, merchant_key: str, submission: QueueSubmission) -> Waiting:
         async with self._operation_lock:
             merchant = self._merchant(merchant_key)
+            lat, lng = await run_storage(
+                self._stored_shop_coordinates,
+                merchant_key,
+                submission.shop_id,
+            )
+            if lat is None or lng is None:
+                raise QueueUnavailableError("店舗の位置情報を取得できません")
             async with httpx.AsyncClient(http2=True, timeout=30) as http:
                 manager = TokenManager(
                     self._store,
@@ -364,7 +376,7 @@ class MatocaService:
                     client = MatocaClient(merchant, http, liff.access_token)
                     await client.authenticate()
                     shop, waiting = await asyncio.gather(
-                        client.get_shop(submission.shop_id),
+                        client.get_shop(submission.shop_id, lat=lat, lng=lng),
                         client.list_waiting(),
                     )
                     return client, shop, waiting
@@ -389,6 +401,16 @@ class MatocaService:
                     in_advance_information=submission.in_advance_information,
                 )
                 return await client.create_waiting(request)
+
+    def _stored_shop_coordinates(
+        self,
+        merchant_key: str,
+        shop_id: int,
+    ) -> tuple[str | float | None, str | float | None]:
+        for stored_shop in self._shops.latest(merchant_key):
+            if stored_shop.shop.id == shop_id:
+                return stored_shop.shop.lat, stored_shop.shop.lng
+        return None, None
 
     async def cancel_waiting(self, merchant_key: str, waiting_id: int) -> None:
         async with self._operation_lock:
