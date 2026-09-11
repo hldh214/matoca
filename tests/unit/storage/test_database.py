@@ -20,7 +20,7 @@ def test_initialize_creates_private_database_and_schema(tmp_path: Path) -> None:
     assert stat.S_IMODE(database.path.stat().st_mode) == 0o600
     assert (
         database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 4
+        == 5
     )
 
 
@@ -83,7 +83,7 @@ def test_business_migration_rolls_back_schema_and_version_after_ddl_failure(tmp_
         connection.set_authorizer(None)
         migrate(connection)
 
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'shops'"
         ).fetchone() == ("shops",)
@@ -157,7 +157,7 @@ def test_initialize_upgrades_exact_pre_fix_version_two_database(tmp_path: Path) 
 
     assert (
         database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 4
+        == 5
     )
     column = database.read(
         lambda connection: connection.execute(
@@ -187,7 +187,7 @@ def test_initialize_upgrades_exact_version_three_database(tmp_path: Path) -> Non
 
     assert (
         database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 4
+        == 5
     )
     assert database.read(
         lambda connection: connection.execute(
@@ -195,3 +195,42 @@ def test_initialize_upgrades_exact_version_three_database(tmp_path: Path) -> Non
             "WHERE type = 'table' AND name = 'shop_observation_rollups_5m'"
         ).fetchone()
     ) == ("shop_observation_rollups_5m",)
+
+
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
+def test_additive_catalog_upgrade_preserves_legacy_data(tmp_path: Path, version: int) -> None:
+    path = tmp_path / "data" / "matoca.db"
+    path.parent.mkdir()
+    with sqlite3.connect(path) as connection:
+        for migration in MIGRATIONS[:version]:
+            migration(connection)
+        connection.execute(f"PRAGMA user_version = {version}")
+        connection.execute("INSERT INTO database_metadata VALUES ('synthetic', 'preserved')")
+        if version >= 2:
+            connection.execute(
+                "INSERT INTO shops (merchant_key, shop_id, name, options_json) "
+                "VALUES ('test', 1, 'Original', '{}')"
+            )
+            connection.execute("""INSERT INTO shop_observations VALUES
+                ('test', 1, '2026-09-10T00:00:00+00:00', 7, 15, 0, 1, 1, 0, 0, 1, 1, NULL)""")
+            connection.execute("INSERT INTO preferences VALUES (1, 3, 1, 10, 20)")
+    database = Database(path)
+    database.initialize()
+    assert (
+        database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
+        == 5
+    )
+    assert database.read(
+        lambda connection: connection.execute(
+            "SELECT value FROM database_metadata WHERE key = 'synthetic'"
+        ).fetchone()
+    ) == ("preserved",)
+    if version >= 2:
+        repository = ShopRepository(database)
+        assert repository.latest("test")[0].shop.current_waiting == 7
+        assert repository.catalog_state("test").complete is False
+        assert database.read(
+            lambda connection: connection.execute(
+                "SELECT default_adult_count FROM preferences"
+            ).fetchone()
+        ) == (3,)

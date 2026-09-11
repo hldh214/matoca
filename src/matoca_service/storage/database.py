@@ -30,6 +30,7 @@ class Database:
 
     def write(self, operation: Callable[[sqlite3.Connection], T]) -> T:
         with self._connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
             result = operation(connection)
         self._enforce_file_modes()
         return result

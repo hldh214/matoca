@@ -2,6 +2,7 @@ import asyncio
 from typing import Protocol
 
 from matoca_service.collection.models import CollectionCycle
+from matoca_service.storage.asyncio import run_storage
 from matoca_service.storage.models import CollectionWrite
 
 
@@ -24,5 +25,14 @@ class CollectionService:
 
     async def collect(self, merchant_key: str) -> CollectionCycle:
         cycle = await self._reader.read_collection_cycle(merchant_key)
-        await asyncio.to_thread(self._repository.save_cycle, cycle.to_storage())
+        try:
+            await run_storage(self._repository.save_cycle, cycle.to_storage())
+        except asyncio.CancelledError:
+            if cycle.rate_limit is None:
+                raise
+            # Persistence has drained. Finish recording the known 429 even when
+            # shutdown cancelled the await while that transaction was running.
+            raise cycle.rate_limit from None
+        if cycle.rate_limit is not None:
+            raise cycle.rate_limit
         return cycle

@@ -60,6 +60,14 @@ class CollectionWrite:
     merchant_key: str
     observed_at: datetime
     shops: list[ShopObservation]
+    catalog_complete: bool = True
+
+
+@dataclass(frozen=True)
+class CatalogState:
+    observed_at: datetime
+    complete: bool
+    static_refreshed_at: datetime | None = None
 
 
 @dataclass(frozen=True)

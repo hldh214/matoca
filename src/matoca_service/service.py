@@ -8,7 +8,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from matoca_service.collection.coordinator import CollectionCoordinator
-from matoca_service.collection.models import CollectedShop, CollectionCycle
+from matoca_service.collection.models import CollectedShop, CollectionCycle, CollectionRateLimited
 from matoca_service.collection.schedule import PollSchedule
 from matoca_service.collection.service import CollectionService
 from matoca_service.config import LineConfig, MerchantConfig, MerchantRegistry
@@ -18,8 +18,8 @@ from matoca_service.line.token_manager import TokenManager
 from matoca_service.matoca.client import MatocaApiError, MatocaClient
 from matoca_service.matoca.models import CreateWaitingRequest, Shop, ShopOptions, Waiting
 from matoca_service.state.store import JsonStateStore
+from matoca_service.storage.asyncio import run_storage
 from matoca_service.storage.database import Database
-from matoca_service.storage.models import StoredShop
 from matoca_service.storage.repositories import ShopRepository
 
 T = TypeVar("T")
@@ -189,50 +189,33 @@ class MatocaService:
         force_catalog: bool = False,
     ) -> MerchantSnapshot:
         self._merchant(merchant_key)
-        stored_shops = await asyncio.to_thread(self._shops.latest, merchant_key)
-        if force_catalog or not stored_shops:
-            try:
-                await self._collector.collect(merchant_key)
-            except httpx.HTTPError, MatocaApiError, OSError, ValueError:
-                if not stored_shops:
-                    raise
-                return self._stored_snapshot(merchant_key, stored_shops, stale=True)
-            stored_shops = await asyncio.to_thread(self._shops.latest, merchant_key)
-        if not stored_shops:
-            raise RuntimeError("collection completed without storing shops")
-        return self._stored_snapshot(merchant_key, stored_shops)
+        requested_at = datetime.now(tz=UTC)
+        state = await run_storage(self._shops.catalog_state, merchant_key)
+        if force_catalog or state is None:
+            await self._collection_coordinator.collect(merchant_key, requested_at=requested_at)
+        return await run_storage(self._stored_snapshot, merchant_key)
 
     def _stored_snapshot(
         self,
         merchant_key: str,
-        stored_shops: list[StoredShop],
-        *,
-        stale: bool = False,
     ) -> MerchantSnapshot:
+        stored_shops, catalog, poll_state = self._shops.snapshot(merchant_key)
+        stale = catalog is None or not catalog.complete or poll_state.error_code is not None
         observations = [shop.observation for shop in stored_shops if shop.observation is not None]
-        if not observations:
-            raise RuntimeError("stored shops have no collection observations")
-        observed_timestamps: list[datetime] = []
-        for observation in observations:
-            observed_at = observation.observed_at
-            if observed_at is not None:
-                observed_timestamps.append(observed_at)
-        if not observed_timestamps:
-            raise RuntimeError("stored observations have no timestamps")
-        refreshed_at = max(observed_timestamps)
-        latest_cycle = [
-            observation for observation in observations if observation.observed_at == refreshed_at
-        ]
+        refreshed_at = catalog.observed_at if catalog else datetime.now(tz=UTC)
         detail_timestamps: list[datetime] = []
         for stored_shop in stored_shops:
             detail_at = stored_shop.last_detail_at
             if detail_at is not None:
                 detail_timestamps.append(detail_at)
-        latest_detail_at = max(detail_timestamps) if detail_timestamps else None
-        stale = stale or any(not observation.detail_fresh for observation in latest_cycle)
+        latest_detail_at = min(detail_timestamps) if detail_timestamps else None
+        stale = stale or any(not observation.detail_fresh for observation in observations)
+        stale = stale or len(observations) != len(stored_shops)
         now = datetime.now(tz=UTC)
         stale_after = self._poll_schedule.next_interval(merchant_key, now, False) * 2
-        if latest_detail_at is None or now - latest_detail_at > stale_after:
+        if (
+            stored_shops and (latest_detail_at is None or now - latest_detail_at > stale_after)
+        ) or now - refreshed_at > stale_after:
             stale = True
         merchant = self._merchant(merchant_key)
         return MerchantSnapshot(
@@ -286,14 +269,32 @@ class MatocaService:
             async def fetch(client: MatocaClient) -> CollectionCycle:
                 base_shops = await client.list_all_shops()
                 semaphore = asyncio.Semaphore(4)
+                rate_limit: CollectionRateLimited | None = None
 
                 async def detail(base_shop: Shop) -> CollectedShop:
+                    nonlocal rate_limit
                     async with semaphore:
+                        if rate_limit is not None:
+                            return CollectedShop(
+                                _without_detail(base_shop), True, False, "rate_limited"
+                            )
                         try:
                             detail_shop = await client.get_shop(base_shop.id)
                         except httpx.HTTPStatusError as error:
                             if error.response.status_code in {401, 403}:
                                 raise
+                            if error.response.status_code == 429:
+                                limited = CollectionRateLimited.from_response(
+                                    error.response, datetime.now(tz=UTC)
+                                )
+                                if rate_limit is None or (
+                                    limited.retry_at is not None
+                                    and (
+                                        rate_limit.retry_at is None
+                                        or limited.retry_at > rate_limit.retry_at
+                                    )
+                                ):
+                                    rate_limit = limited
                             return CollectedShop(
                                 shop=_without_detail(base_shop),
                                 list_fresh=True,
@@ -336,6 +337,7 @@ class MatocaService:
                     observed_at=observed_at,
                     shops=[task.result() for task in detail_tasks],
                     waiting=waiting_task.result(),
+                    rate_limit=rate_limit,
                 )
 
             return await self._authenticated_read(merchant_key, fetch)

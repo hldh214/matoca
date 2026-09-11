@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta, tzinfo
 from pathlib import Path
@@ -8,7 +9,11 @@ import httpx
 import pytest
 import respx
 
+from matoca_service.collection.coordinator import CollectionCoordinator
 from matoca_service.collection.models import CollectedShop, CollectionCycle
+from matoca_service.collection.schedule import PollSchedule
+from matoca_service.collection.service import CollectionService
+from matoca_service.config import MerchantRegistry
 from matoca_service.line.models import LiffToken
 from matoca_service.matoca.client import MatocaApiError
 from matoca_service.matoca.models import Shop, ShopForms, Waiting
@@ -22,7 +27,12 @@ from matoca_service.service import (
 from matoca_service.state.models import AppState, LiffTokenState, LineState
 from matoca_service.state.store import JsonStateStore
 from matoca_service.storage.database import Database
-from matoca_service.storage.models import CollectionWrite, PollWindow, ShopObservation
+from matoca_service.storage.models import (
+    CollectionWrite,
+    MerchantPollState,
+    PollWindow,
+    ShopObservation,
+)
 from matoca_service.storage.repositories import ShopRepository
 
 type JwtFactory = Callable[[dict[str, Any]], str]
@@ -86,6 +96,141 @@ async def test_merchant_snapshot_uses_database_without_upstream_request(
     assert snapshot.shops[0].id == 3272
     assert snapshot.refreshed_at == datetime(2026, 9, 10, 8, tzinfo=UTC)
     assert upstream_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force", [True, False])
+async def test_snapshot_collection_honors_durable_backoff(
+    stored_service: tuple[MatocaService, list[str]], monkeypatch: pytest.MonkeyPatch, force: bool
+) -> None:
+    service, calls = stored_service
+    service._shops.update_poll_state(
+        MerchantPollState(
+            "sawayaka",
+            retry_at=datetime.now(tz=UTC) + timedelta(hours=1),
+            error_code="rate_limited",
+        )
+    )
+    if not force:
+        service._database.write(
+            lambda connection: connection.execute("DELETE FROM catalog_members")
+        )
+
+    async def unexpected(key: str) -> CollectionCycle:
+        calls.append(key)
+        raise AssertionError("backoff bypassed")
+
+    monkeypatch.setattr(service, "read_collection_cycle", unexpected)
+    await service.merchant_snapshot("sawayaka", force_catalog=force)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force", [True, False])
+async def test_concurrent_snapshot_requests_collect_only_once(
+    stored_service: tuple[MatocaService, list[str]], monkeypatch: pytest.MonkeyPatch, force: bool
+) -> None:
+    service, calls = stored_service
+    if not force:
+        service._database.write(
+            lambda connection: connection.execute("DELETE FROM merchant_catalog_state")
+        )
+        service._database.write(
+            lambda connection: connection.execute("DELETE FROM catalog_members")
+        )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def collect(key: str) -> CollectionCycle:
+        calls.append(key)
+        entered.set()
+        await release.wait()
+        return CollectionCycle(
+            key, datetime.now(tz=UTC), [CollectedShop(Shop(id=1, name="Fresh"), True, True)], []
+        )
+
+    monkeypatch.setattr(service, "read_collection_cycle", collect)
+    requests = [
+        asyncio.create_task(service.merchant_snapshot("sawayaka", force_catalog=force))
+        for _ in range(8)
+    ]
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        await asyncio.sleep(0.05)
+    finally:
+        release.set()
+        snapshots = await asyncio.gather(*requests)
+    assert calls == ["sawayaka"]
+    assert all(snapshot.shops[0].id == 1 for snapshot in snapshots)
+
+
+@pytest.mark.asyncio
+async def test_empty_complete_catalog_is_cached(
+    stored_service: tuple[MatocaService, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, calls = stored_service
+
+    async def collect(key: str) -> CollectionCycle:
+        calls.append(key)
+        return CollectionCycle(key, datetime.now(tz=UTC), [], [])
+
+    monkeypatch.setattr(service, "read_collection_cycle", collect)
+    first = await service.merchant_snapshot("sawayaka", force_catalog=True)
+    second = await service.merchant_snapshot("sawayaka")
+    assert first.shops == second.shops == []
+    assert calls == ["sawayaka"]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_poll_window_does_not_block_loop(
+    stored_service: tuple[MatocaService, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, _ = stored_service
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_window(key: str, now: datetime) -> None:
+        entered.set()
+        release.wait(0.4)
+
+    monkeypatch.setattr(service._shops, "poll_window", slow_window)
+    task = asyncio.create_task(service.merchant_snapshot("sawayaka"))
+    started = asyncio.get_running_loop().time()
+    try:
+        while not entered.is_set():
+            await asyncio.sleep(0.001)
+        await asyncio.sleep(0.01)
+        assert asyncio.get_running_loop().time() - started < 0.2
+    finally:
+        release.set()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_cancelled_snapshot_request_does_not_release_shared_admission(
+    stored_service: tuple[MatocaService, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, calls = stored_service
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def collect(key: str) -> CollectionCycle:
+        calls.append(key)
+        entered.set()
+        await release.wait()
+        return CollectionCycle(
+            key, datetime.now(tz=UTC), [CollectedShop(Shop(id=1, name="Shared"), True, True)], []
+        )
+
+    monkeypatch.setattr(service, "read_collection_cycle", collect)
+    request = asyncio.create_task(service.merchant_snapshot("sawayaka", force_catalog=True))
+    await entered.wait()
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    second = asyncio.create_task(service.merchant_snapshot("sawayaka", force_catalog=True))
+    await asyncio.sleep(0.01)
+    release.set()
+    assert (await second).shops[0].id == 1
+    assert calls == ["sawayaka"]
 
 
 @pytest.mark.asyncio
@@ -556,6 +701,54 @@ def status_error(status_code: int) -> httpx.HTTPStatusError:
     request = httpx.Request("GET", "https://example.test/shops/1")
     response = httpx.Response(status_code, request=request)
     return httpx.HTTPStatusError("status", request=request, response=response)
+
+
+@pytest.mark.asyncio
+async def test_detail_429_persists_partial_evidence_and_durable_backoff(tmp_path: Path) -> None:
+    class RateLimitedClient(FakeCycleClient):
+        def __init__(self) -> None:
+            super().__init__(
+                [Shop(id=n, name=f"Shop {n}", current_waiting=n) for n in range(1, 10)], {}
+            )
+            self.launched: list[int] = []
+
+        async def get_shop(self, shop_id: int) -> Shop:
+            self.launched.append(shop_id)
+            if shop_id == 2:
+                error = status_error(429)
+                error.response.headers["Retry-After"] = "180"
+                raise error
+            return Shop(id=shop_id, name="Detail", is_open=True)
+
+    client = RateLimitedClient()
+    reader = CycleReadTestService(client)
+    database = Database(tmp_path / "data" / "matoca.db")
+    database.initialize()
+    repository = ShopRepository(database)
+    now = datetime.now(tz=UTC)
+    coordinator = CollectionCoordinator(
+        MerchantRegistry.model_validate(
+            {"merchants": {"sawayaka": MerchantRegistry.load_builtin().merchants["sawayaka"]}}
+        ),
+        CollectionService(reader, repository),
+        PollSchedule(repository),
+        repository,
+        now=lambda: now,
+    )
+    await coordinator.run_once()
+    state = repository.poll_state("sawayaka")
+    assert state.error_code == "rate_limited"
+    assert state.retry_at >= now + timedelta(seconds=179)
+    assert state.last_success_at is None
+    stored = repository.latest("sawayaka")
+    assert len(stored) == 9
+    assert stored[0].observation.detail_fresh is True
+    assert stored[1].observation.error_code == "rate_limited"
+    assert stored[-1].observation.current_waiting == 9
+    assert stored[-1].observation.detail_fresh is False
+    assert len(client.launched) < 9
+    await coordinator.run_once()
+    assert len(client.launched) < 9
 
 
 @pytest.mark.asyncio

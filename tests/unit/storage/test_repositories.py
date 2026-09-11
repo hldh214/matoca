@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -196,3 +197,75 @@ def test_poll_state_persists_nonnegative_failure_count(database: Database) -> No
     repository.update_poll_state(state)
 
     assert repository.poll_state("sawayaka") == state
+
+
+def test_latest_omits_shops_removed_from_shrinking_and_empty_catalogs(database: Database) -> None:
+    repository = ShopRepository(database)
+    now = datetime(2026, 9, 10, 8, tzinfo=UTC)
+    first = ShopObservation(Shop(id=1, name="First"), True, True)
+    second = ShopObservation(Shop(id=2, name="Second"), True, True)
+    repository.save_cycle(CollectionWrite("sawayaka", now, [first, second]))
+    repository.save_cycle(CollectionWrite("sawayaka", now + timedelta(minutes=1), [first]))
+    assert [item.shop.id for item in repository.latest("sawayaka")] == [1]
+    assert len(repository.observations("sawayaka", 2, limit=10)) == 1
+    repository.save_cycle(CollectionWrite("sawayaka", now + timedelta(minutes=2), []))
+    assert repository.latest("sawayaka") == []
+    assert repository.catalog_state("sawayaka").observed_at == now + timedelta(minutes=2)
+
+
+def test_partial_catalog_preserves_membership_but_marks_catalog_incomplete(
+    database: Database,
+) -> None:
+    repository = ShopRepository(database)
+    now = datetime(2026, 9, 10, 8, tzinfo=UTC)
+    first = ShopObservation(Shop(id=1, name="First"), True, True)
+    second = ShopObservation(Shop(id=2, name="Second"), True, True)
+    repository.save_cycle(CollectionWrite("sawayaka", now, [first, second]))
+    repository.save_cycle(
+        CollectionWrite("sawayaka", now + timedelta(minutes=1), [first], catalog_complete=False)
+    )
+    assert [item.shop.id for item in repository.latest("sawayaka")] == [1, 2]
+    assert repository.catalog_state("sawayaka").complete is False
+
+
+def test_static_identity_refreshes_once_per_tokyo_day_while_live_data_changes(
+    database: Database,
+) -> None:
+    repository = ShopRepository(database)
+    now = datetime(2026, 9, 10, 14, 58, tzinfo=UTC)
+    first = ShopObservation(
+        Shop(id=1, name="Original", address="Old", current_waiting=1), True, True
+    )
+    changed = ShopObservation(
+        Shop(id=1, name="Changed", address="New", current_waiting=9), True, True
+    )
+    repository.save_cycle(CollectionWrite("sawayaka", now, [first]))
+    repository = ShopRepository(database)
+    repository.save_cycle(CollectionWrite("sawayaka", now + timedelta(minutes=1), [changed]))
+    stored = repository.latest("sawayaka")[0].shop
+    assert (stored.name, stored.address, stored.current_waiting) == ("Original", "Old", 9)
+    repository.save_cycle(CollectionWrite("sawayaka", now + timedelta(minutes=2), [changed]))
+    stored = repository.latest("sawayaka")[0].shop
+    assert (stored.name, stored.address, stored.current_waiting) == ("Changed", "New", 9)
+
+
+def test_snapshot_membership_and_freshness_share_one_read_transaction(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = ShopRepository(database)
+    now = datetime(2026, 9, 10, 8, tzinfo=UTC)
+    repository.save_cycle(
+        CollectionWrite("sawayaka", now, [ShopObservation(Shop(id=1, name="Old"), True, True)])
+    )
+    original = repository._latest
+
+    def change_catalog_between_reads(connection: sqlite3.Connection, key: str) -> object:
+        shops = original(connection, key)
+        repository.save_cycle(CollectionWrite(key, now + timedelta(minutes=1), []))
+        return shops
+
+    monkeypatch.setattr(repository, "_latest", change_catalog_between_reads)
+    shops, state, _ = repository.snapshot("sawayaka")
+    assert [item.shop.id for item in shops] == [1]
+    assert state.observed_at == now
+    assert repository.catalog_state("sawayaka").observed_at == now + timedelta(minutes=1)

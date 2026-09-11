@@ -1,11 +1,19 @@
-from datetime import UTC, datetime
+import asyncio
+import threading
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
-from matoca_service.collection.models import CollectedShop, CollectionCycle
+from matoca_service.collection.coordinator import CollectionCoordinator
+from matoca_service.collection.models import CollectedShop, CollectionCycle, CollectionRateLimited
+from matoca_service.collection.schedule import PollSchedule
 from matoca_service.collection.service import CollectionService
+from matoca_service.config import MerchantRegistry
 from matoca_service.matoca.models import Shop, Waiting
+from matoca_service.storage.database import Database
 from matoca_service.storage.models import CollectionWrite
+from matoca_service.storage.repositories import ShopRepository
 
 FIXED_NOW = datetime(2026, 9, 10, 8, 1, tzinfo=UTC)
 
@@ -79,3 +87,67 @@ def test_cycle_storage_preserves_failed_detail_as_unobserved() -> None:
     assert observation.waiting_minutes is None
     assert observation.is_open is None
     assert observation.error_code == "timeout"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_stop", [False, True])
+async def test_shutdown_during_rate_limited_persistence_drains_and_keeps_backoff(
+    tmp_path: Path,
+    cancel_stop: bool,
+) -> None:
+    database = Database(tmp_path / "data" / "matoca.db")
+    database.initialize()
+    entered = threading.Event()
+    release = threading.Event()
+
+    class DelayedRepository(ShopRepository):
+        def save_cycle(self, cycle: CollectionWrite) -> None:
+            entered.set()
+            release.wait(2)
+            super().save_cycle(cycle)
+
+    repository = DelayedRepository(database)
+    cycle = CollectionCycle(
+        "sawayaka",
+        FIXED_NOW,
+        [CollectedShop(Shop(id=1, name="Partial", current_waiting=8), True, False, "rate_limited")],
+        [],
+        rate_limit=CollectionRateLimited(retry_after=timedelta(minutes=3)),
+    )
+    registry = MerchantRegistry.model_validate(
+        {"merchants": {"sawayaka": MerchantRegistry.load_builtin().merchants["sawayaka"]}}
+    )
+    coordinator = CollectionCoordinator(
+        registry,
+        CollectionService(FakeMerchantReader(cycle), repository),
+        PollSchedule(repository),
+        repository,
+        now=lambda: FIXED_NOW,
+    )
+    coordinator.start()
+    try:
+        while not entered.is_set():
+            await asyncio.sleep(0.001)
+        stopping = asyncio.create_task(coordinator.stop())
+        await asyncio.sleep(0.15)
+        assert not stopping.done(), "shutdown must keep ownership of the unfinished transaction"
+        if cancel_stop:
+            stopping.cancel()
+            await asyncio.sleep(0.01)
+            stopping.cancel()
+            await asyncio.sleep(0.01)
+            assert not stopping.done(), "cancelling shutdown must not abandon its workers"
+        release.set()
+        if cancel_stop:
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(stopping, timeout=1)
+        else:
+            await asyncio.wait_for(stopping, timeout=1)
+        assert repository.latest("sawayaka")[0].observation.current_waiting == 8
+        state = repository.poll_state("sawayaka")
+        assert state.error_code == "rate_limited"
+        assert state.retry_at == FIXED_NOW + timedelta(minutes=3)
+        assert coordinator._in_flight == {}
+    finally:
+        release.set()
+        await coordinator.stop()

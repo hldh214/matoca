@@ -123,11 +123,49 @@ def _create_observation_rollups(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _create_catalog_state(connection: sqlite3.Connection) -> None:
+    connection.execute("""
+        CREATE TABLE merchant_catalog_state (
+            merchant_key TEXT PRIMARY KEY,
+            observed_at TEXT NOT NULL,
+            complete INTEGER NOT NULL,
+            static_refreshed_at TEXT
+        )
+    """)
+    connection.execute("""
+        CREATE TABLE catalog_members (
+            merchant_key TEXT NOT NULL,
+            shop_id INTEGER NOT NULL,
+            PRIMARY KEY (merchant_key, shop_id),
+            FOREIGN KEY (merchant_key, shop_id) REFERENCES shops (merchant_key, shop_id)
+        )
+    """)
+    # Old schemas did not record complete list membership. Expose only the newest
+    # observed set, marked stale until the next complete catalog establishes it.
+    connection.execute("""
+        INSERT INTO merchant_catalog_state (merchant_key, observed_at, complete)
+        SELECT merchant_key, MAX(observed_minute), 0 FROM shop_observations
+        GROUP BY merchant_key
+    """)
+    connection.execute("""
+        INSERT INTO catalog_members
+        SELECT o.merchant_key, o.shop_id FROM shop_observations o
+        JOIN merchant_catalog_state c
+          ON c.merchant_key = o.merchant_key AND c.observed_at = o.observed_minute
+    """)
+    connection.execute("""
+        CREATE INDEX shop_observations_poll_window
+        ON shop_observations (merchant_key, observed_minute)
+        WHERE detail_fresh = 1 AND is_open = 1
+    """)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _bootstrap_metadata,
     _create_business_storage,
     _add_poll_failure_count,
     _create_observation_rollups,
+    _create_catalog_state,
 )
 
 

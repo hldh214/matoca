@@ -505,8 +505,10 @@ git commit -m "feat: serve cached merchant snapshots"
 - Produces: `ShopRepository.rollup_and_prune(now: datetime) -> RetentionResult`.
 - Consumes: migration-2 observations and the migration-4 rollup table.
 
-Migration: Task 6 adds migration version 4 for retention rollups. The unimplemented
-prediction and Web Push migrations are reserved as versions 5 and 6.
+Migration: Task 6 adds migration version 4 for retention rollups. The final review
+fix adds version 5 for catalog membership, completeness, daily static refresh timing,
+and the polling-window index. The unimplemented prediction and Web Push migrations
+are reserved as versions 6 and 7. Versions 1–4 remain unchanged and upgrade additively.
 
 - [ ] **Step 1: Write a failing transactional retention test**
 

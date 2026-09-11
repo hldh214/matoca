@@ -201,9 +201,27 @@ merchant without history every five minutes, polls during its learned operating 
 every minute, and polls outside that window every 15 minutes. It never overlaps requests
 for the same merchant and honors merchant-specific rate-limit backoff.
 
+Manual refreshes and requests without a cached catalog share the same admission and
+durable backoff. Detail-level rate limits preserve the list and any completed detail
+observations before recording the retry deadline. Static identity fields refresh once
+per Tokyo calendar day; live observations and queue forms continue updating each cycle.
+Complete catalogs replace current membership, including an empty catalog. Partial
+catalogs preserve known members with a stale status; historical observations remain
+available after a shop leaves the current catalog.
+
+SQLite operations run outside the event loop. Transient storage failures retry after
+60 seconds with sanitized logging. Shutdown allows 0.1 seconds for normal completion,
+then cancels collection and allows up to 10 seconds to drain outstanding storage; failure
+to drain raises a shutdown error. Configure Supervisor's stop timeout above this bound.
+Schema version 5 upgrades versions 1–4 additively and records catalog timing and membership.
+
 Raw minute observations remain in SQLite for 180 days. Daily maintenance converts older
 fresh observations into five-minute waiting-group and waiting-time aggregates before
 deleting the corresponding raw rows.
+
+The offline frontend integration test runs the actual merchant script against synthetic
+DOM and HTTP boundaries and requires Node.js 22 or newer on the test host. Node.js is not
+a runtime dependency of the Web service.
 
 ## Repository-Local Configuration
 

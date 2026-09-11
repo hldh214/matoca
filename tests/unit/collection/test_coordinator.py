@@ -1,4 +1,6 @@
 import asyncio
+import sqlite3
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
@@ -122,6 +124,111 @@ async def test_run_once_does_not_start_second_cycle_for_busy_merchant() -> None:
     assert collector.calls == ["sawayaka"]
     collector.release.set()
     await first
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_and_drains_a_blocked_collection() -> None:
+    collector = BlockingCollector()
+    coordinator = coordinator_for(collector, MemoryRepository())
+    coordinator.start()
+    await collector.started.wait()
+    try:
+        await asyncio.wait_for(coordinator.stop(), timeout=0.3)
+        assert not coordinator._in_flight
+        assert coordinator._task is None
+    finally:
+        collector.release.set()
+        if coordinator._task is not None:
+            await coordinator.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stage", ["poll_state", "update_poll_state", "rollup_and_prune", "poll_window"]
+)
+async def test_storage_failure_keeps_background_loop_alive(
+    stage: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    repository = MemoryRepository()
+    original = getattr(repository, stage)
+    failed = threading.Event()
+
+    def fail_once(*args: object) -> object:
+        if not failed.is_set():
+            failed.set()
+            raise sqlite3.OperationalError("synthetic secret storage error")
+        return original(*args)
+
+    setattr(repository, stage, fail_once)
+    collector = SuccessfulCollector()
+    current = NOW
+    coordinator = coordinator_for(collector, repository, now=lambda: current)
+    coordinator.start()
+    try:
+        async with asyncio.timeout(1):
+            while not failed.is_set():
+                await asyncio.sleep(0.001)
+        await asyncio.sleep(0.05)
+        assert coordinator._task is not None and not coordinator._task.done()
+        assert "synthetic secret" not in caplog.text
+        current += timedelta(minutes=1)
+        await coordinator.run_once()
+        assert repository.poll_state("sawayaka").last_success_at is not None
+    finally:
+        await coordinator.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stage", ["poll_state", "update_poll_state", "rollup_and_prune", "poll_window"]
+)
+async def test_slow_storage_leaves_event_loop_responsive(stage: str) -> None:
+    repository = MemoryRepository()
+    original = getattr(repository, stage)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def delayed(*args: object) -> object:
+        entered.set()
+        release.wait(0.4)
+        return original(*args)
+
+    setattr(repository, stage, delayed)
+    coordinator = coordinator_for(SuccessfulCollector(), repository)
+    running = asyncio.create_task(coordinator.run_once())
+    try:
+        started = asyncio.get_running_loop().time()
+        while not entered.is_set():
+            await asyncio.sleep(0.001)
+        await asyncio.sleep(0.01)
+        assert asyncio.get_running_loop().time() - started < 0.2
+    finally:
+        release.set()
+        await running
+
+
+@pytest.mark.asyncio
+async def test_force_preserves_backoff_after_transient_state_write_failure() -> None:
+    repository = MemoryRepository()
+    original = repository.update_poll_state
+    failed = False
+
+    def fail_backoff_once(state: MerchantPollState) -> MerchantPollState:
+        nonlocal failed
+        if state.retry_at is not None and not failed:
+            failed = True
+            raise sqlite3.OperationalError("synthetic failure")
+        return original(state)
+
+    repository.update_poll_state = fail_backoff_once
+    collector = ScriptedCollector([CollectionRateLimited(timedelta(minutes=3)), None])
+    current = NOW
+    coordinator = coordinator_for(collector, repository, now=lambda: current)
+    await coordinator.run_once()
+    current += timedelta(minutes=1)
+    await coordinator.collect("sawayaka")
+    assert repository.poll_state("sawayaka").retry_at == NOW + timedelta(minutes=3)
+    assert repository.poll_state("sawayaka").last_success_at is None
 
 
 @pytest.mark.asyncio

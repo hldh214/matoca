@@ -192,3 +192,53 @@ def test_rollup_failure_rolls_back_raw_deletion_and_maintenance_metadata(
         )
         is None
     )
+
+
+@pytest.mark.parametrize("target", ["DELETE ON shop_observations", "INSERT ON database_metadata"])
+def test_retention_rolls_back_after_rollup_insert(database: Database, target: str) -> None:
+    repository = ShopRepository(database)
+    repository.save_cycle(cycle_at(NOW - timedelta(days=181), waiting=10))
+    database.write(
+        lambda connection: connection.execute(
+            f"CREATE TRIGGER fail_later BEFORE {target} "
+            "BEGIN SELECT RAISE(ABORT, 'later failure'); END"
+        )
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="later failure"):
+        repository.rollup_and_prune(NOW)
+    assert repository.rollups("sawayaka", 3272) == []
+    assert len(repository.observations("sawayaka", 3272, limit=10)) == 1
+    assert (
+        database.read(
+            lambda connection: connection.execute(
+                "SELECT value FROM database_metadata WHERE key = 'shop_observation_retention_day'"
+            ).fetchone()
+        )
+        is None
+    )
+    database.write(lambda connection: connection.execute("DROP TRIGGER fail_later"))
+    repository.rollup_and_prune(NOW)
+    assert repository.rollups("sawayaka", 3272)[0].sample_count == 1
+
+
+def test_rollup_merges_populated_metrics_with_unequal_weights(database: Database) -> None:
+    repository = ShopRepository(database)
+    old = NOW - timedelta(days=181)
+    repository.save_cycle(cycle_at(old, waiting=2, waiting_minutes=10))
+    repository.save_cycle(cycle_at(old + timedelta(minutes=1), waiting=6, waiting_minutes=20))
+    repository.rollup_and_prune(NOW)
+    repository.save_cycle(cycle_at(old + timedelta(minutes=2), waiting=16, waiting_minutes=60))
+    repository.rollup_and_prune(NOW + timedelta(days=1))
+    rollup = repository.rollups("sawayaka", 3272)[0]
+    assert (
+        rollup.sample_count,
+        rollup.minimum_waiting,
+        rollup.maximum_waiting,
+        rollup.average_waiting,
+    ) == (3, 2, 16, 8.0)
+    assert (
+        rollup.waiting_minutes_sample_count,
+        rollup.minimum_waiting_minutes,
+        rollup.maximum_waiting_minutes,
+        rollup.average_waiting_minutes,
+    ) == (3, 10, 60, 30.0)

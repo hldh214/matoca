@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from matoca_service.matoca.models import Shop, ShopForms, ShopOptions, WaitingEstimate
 from matoca_service.storage.database import Database
 from matoca_service.storage.models import (
+    CatalogState,
     CollectionWrite,
     MerchantPollState,
     ObservationRollup,
@@ -29,6 +30,38 @@ class ShopRepository:
 
     def latest(self, merchant_key: str) -> list[StoredShop]:
         return self._database.read(lambda connection: self._latest(connection, merchant_key))
+
+    def catalog_state(self, merchant_key: str) -> CatalogState | None:
+        return self._database.read(lambda connection: self._catalog_state(connection, merchant_key))
+
+    def snapshot(
+        self, merchant_key: str
+    ) -> tuple[list[StoredShop], CatalogState | None, MerchantPollState]:
+        def read(
+            connection: sqlite3.Connection,
+        ) -> tuple[list[StoredShop], CatalogState | None, MerchantPollState]:
+            connection.execute("BEGIN")
+            return (
+                self._latest(connection, merchant_key),
+                self._catalog_state(connection, merchant_key),
+                self._poll_state(connection, merchant_key),
+            )
+
+        return self._database.read(read)
+
+    def _catalog_state(
+        self, connection: sqlite3.Connection, merchant_key: str
+    ) -> CatalogState | None:
+        row = connection.execute(
+            "SELECT observed_at, complete, static_refreshed_at FROM merchant_catalog_state "
+            "WHERE merchant_key = ?",
+            (merchant_key,),
+        ).fetchone()
+        return (
+            CatalogState(_parse_datetime(row[0]), bool(row[1]), _parse_optional_datetime(row[2]))
+            if row is not None
+            else None
+        )
 
     def observations(self, merchant_key: str, shop_id: int, *, limit: int) -> list[ShopObservation]:
         return self._database.read(
@@ -57,6 +90,18 @@ class ShopRepository:
 
     def _save_cycle(self, connection: sqlite3.Connection, cycle: CollectionWrite) -> None:
         observed_minute = _normalize_minute(cycle.observed_at)
+        previous = self._catalog_state(connection, cycle.merchant_key)
+        is_latest = previous is None or observed_minute >= previous.observed_at
+        refresh_static = (
+            is_latest
+            and cycle.catalog_complete
+            and (
+                previous is None
+                or previous.static_refreshed_at is None
+                or observed_minute.astimezone(TOKYO).date()
+                > previous.static_refreshed_at.astimezone(TOKYO).date()
+            )
+        )
         for observation in cycle.shops:
             shop = observation.shop
             forms_json = _canonical_json(shop.forms)
@@ -68,13 +113,13 @@ class ShopRepository:
                     forms_json, options_json, last_detail_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (merchant_key, shop_id) DO UPDATE SET
-                    name = excluded.name,
-                    sub_name = excluded.sub_name,
-                    address = excluded.address,
-                    tel = excluded.tel,
-                    lat = excluded.lat,
-                    lng = excluded.lng,
-                    image_url = excluded.image_url,
+                    name = CASE WHEN ? THEN excluded.name ELSE shops.name END,
+                    sub_name = CASE WHEN ? THEN excluded.sub_name ELSE shops.sub_name END,
+                    address = CASE WHEN ? THEN excluded.address ELSE shops.address END,
+                    tel = CASE WHEN ? THEN excluded.tel ELSE shops.tel END,
+                    lat = CASE WHEN ? THEN excluded.lat ELSE shops.lat END,
+                    lng = CASE WHEN ? THEN excluded.lng ELSE shops.lng END,
+                    image_url = CASE WHEN ? THEN excluded.image_url ELSE shops.image_url END,
                     forms_json = CASE WHEN excluded.last_detail_at IS NOT NULL
                         THEN excluded.forms_json ELSE shops.forms_json END,
                     options_json = CASE WHEN excluded.last_detail_at IS NOT NULL
@@ -94,6 +139,7 @@ class ShopRepository:
                     forms_json,
                     options_json,
                     _serialize_datetime(observed_minute) if observation.detail_fresh else None,
+                    *([refresh_static] * 7),
                 ),
             )
             connection.execute(
@@ -132,6 +178,35 @@ class ShopRepository:
                 ),
             )
 
+        if is_latest:
+            if cycle.catalog_complete:
+                connection.execute(
+                    "DELETE FROM catalog_members WHERE merchant_key = ?", (cycle.merchant_key,)
+                )
+            connection.executemany(
+                "INSERT OR IGNORE INTO catalog_members (merchant_key, shop_id) VALUES (?, ?)",
+                [(cycle.merchant_key, observation.shop.id) for observation in cycle.shops],
+            )
+            static_at = (
+                observed_minute
+                if refresh_static
+                else previous.static_refreshed_at
+                if previous
+                else None
+            )
+            connection.execute(
+                """INSERT INTO merchant_catalog_state VALUES (?, ?, ?, ?)
+                ON CONFLICT (merchant_key) DO UPDATE SET
+                    observed_at = excluded.observed_at, complete = excluded.complete,
+                    static_refreshed_at = excluded.static_refreshed_at""",
+                (
+                    cycle.merchant_key,
+                    _serialize_datetime(observed_minute),
+                    int(cycle.catalog_complete),
+                    _serialize_optional_datetime(static_at),
+                ),
+            )
+
     def _latest(self, connection: sqlite3.Connection, merchant_key: str) -> list[StoredShop]:
         rows = connection.execute(
             """
@@ -139,6 +214,8 @@ class ShopRepository:
                    o.is_open, o.is_issuable, o.is_holiday, o.is_suspended, o.list_fresh,
                    o.detail_fresh, o.error_code
             FROM shops AS s
+            JOIN catalog_members AS c
+              ON c.merchant_key = s.merchant_key AND c.shop_id = s.shop_id
             LEFT JOIN shop_observations AS o
               ON o.merchant_key = s.merchant_key AND o.shop_id = s.shop_id
              AND o.observed_minute = (
@@ -357,9 +434,12 @@ class ShopRepository:
         first_day = local_now.date() - timedelta(days=29)
         first_minute = datetime.combine(first_day, time.min, tzinfo=TOKYO)
         next_day = datetime.combine(local_now.date() + timedelta(days=1), time.min, tzinfo=TOKYO)
-        rows = connection.execute(
+        row = connection.execute(
             """
-            SELECT observed_minute
+            SELECT MIN(CAST(strftime('%H', observed_minute, '+9 hours') AS INTEGER) * 60
+                       + CAST(strftime('%M', observed_minute) AS INTEGER)),
+                   MAX(CAST(strftime('%H', observed_minute, '+9 hours') AS INTEGER) * 60
+                       + CAST(strftime('%M', observed_minute) AS INTEGER))
             FROM shop_observations
             WHERE merchant_key = ? AND observed_minute >= ? AND observed_minute < ?
               AND detail_fresh = 1 AND is_open = 1
@@ -369,15 +449,11 @@ class ShopRepository:
                 _serialize_datetime(first_minute),
                 _serialize_datetime(next_day),
             ),
-        ).fetchall()
-        if not rows:
+        ).fetchone()
+        if row[0] is None:
             return None
-
-        local_minutes = [
-            _minute_of_day(_parse_datetime(str(row[0])).astimezone(TOKYO)) for row in rows
-        ]
-        start_minute = min(local_minutes) - 30
-        end_minute = max(local_minutes) + 30
+        start_minute = int(row[0]) - 30
+        end_minute = int(row[1]) + 30
         return PollWindow(
             start=_time_from_minute(start_minute),
             end=_time_from_minute(end_minute),
@@ -556,10 +632,6 @@ def _parse_optional_datetime(value: object) -> datetime | None:
 
 def _sqlite_bool(value: bool | None) -> int | None:
     return int(value) if value is not None else None
-
-
-def _minute_of_day(value: datetime) -> int:
-    return value.hour * 60 + value.minute
 
 
 def _time_from_minute(value: int) -> time:

@@ -3,6 +3,7 @@ config.toml
 line_client.toml
 state.json
 state.lock
+shop_catalog.json
 data/
 events.jsonl
 *.tmp
