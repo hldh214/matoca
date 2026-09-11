@@ -99,10 +99,10 @@ def test_readme_documents_manual_console_behavior() -> None:
     for phrase in (
         "炭焼きレストラン さわやか",
         "ラ・オハナ 横浜本牧",
-        "受付中のみ",
+        "受付可能",
         "公式目安",
-        "成人 2 人",
-        "子供 0 人",
+        "大人 2 人",
+        "子ども 0 人",
         "手動操作",
         "店舗一覧は SQLite キャッシュから表示",
         "現在の順番待ちは Matoca API から独立して更新",

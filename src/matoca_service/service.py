@@ -148,6 +148,59 @@ def validate_queue_submission(
             raise QueueUnavailableError("大人の人数が受付範囲外です")
         if not shop.forms.min_child <= submission.child_count <= shop.forms.max_child:
             raise QueueUnavailableError("子どもの人数が受付範囲外です")
+    _validate_confirmation_answers(shop, submission)
+
+
+def _confirmation_choices(item: dict[str, object]) -> set[int]:
+    title = item.get("title")
+    options = item.get("sub_items")
+    if not isinstance(title, str) or not title.strip() or not isinstance(options, list):
+        raise QueueUnavailableError("選択内容の確認が必要です")
+    choices: set[int] = set()
+    for option in options:
+        if not isinstance(option, dict) or option.get("enable") is not True:
+            continue
+        disabled = option.get("disabled")
+        if disabled is not None and type(disabled) is not bool:
+            raise QueueUnavailableError("選択内容の確認が必要です")
+        if disabled:
+            continue
+        index, text = option.get("sub_item_index"), option.get("text")
+        if (
+            type(index) is not int
+            or index < 0
+            or index in choices
+            or not isinstance(text, str)
+            or not text.strip()
+        ):
+            raise QueueUnavailableError("選択内容の確認が必要です")
+        choices.add(index)
+    if not choices:
+        raise QueueUnavailableError("選択内容の確認が必要です")
+    return choices
+
+
+def _validate_confirmation_answers(shop: Shop, submission: QueueSubmission) -> None:
+    forms = shop.forms
+    if forms is not None and forms.is_confirm_tel:
+        raise QueueUnavailableError("選択内容の確認が必要です")
+    items = (forms.model_extra or {}).get("confirm_items") if forms is not None else None
+    if items is None:
+        items = []
+    if not isinstance(items, list):
+        raise QueueUnavailableError("選択内容の確認が必要です")
+    # Disabled fields retain their original answer slots, as in the live Web form.
+    allowed: list[set[int | None]] = [{0, None}, {None}]
+    for index, item in enumerate(items):
+        if not isinstance(item, dict) or type(item.get("enable")) is not bool:
+            raise QueueUnavailableError("選択内容の確認が必要です")
+        if not item["enable"]:
+            continue
+        if index >= len(allowed):
+            raise QueueUnavailableError("選択内容の確認が必要です")
+        allowed[index] = set(_confirmation_choices(item))
+    if submission.answer1 not in allowed[0] or submission.answer2 not in allowed[1]:
+        raise QueueUnavailableError("選択内容の確認が必要です")
 
 
 class MatocaService:

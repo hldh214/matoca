@@ -35,7 +35,7 @@
 
 .queue-band h2 { margin: 0; font-size: 17px; }
 
-.queue-content { min-width: 0; color: #e0e2de; font-size: 14px; }
+.queue-content { min-width: 0; min-height: 0; max-height: 100%; overflow: auto; color: #e0e2de; font-size: 14px; }
 
 .active-queue { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .active-queue strong { overflow: hidden; color: #ffffff; font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
@@ -102,7 +102,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (max-width: 760px) {
   .merchant-name { font-size: 16px; }
   .console-main { padding: 18px 0 48px; }
-  .queue-band { height: auto; min-height: 126px; grid-template-columns: 1fr; gap: 10px; }
+  .queue-band { height: 252px; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); align-items: start; gap: 10px; }
+  .active-queue strong { max-width: 100%; }
   .active-queue { align-items: flex-start; flex-direction: column; gap: 10px; }
   .queue-metrics { width: 100%; justify-content: space-between; gap: 8px; }
   .toolbar { align-items: stretch; flex-direction: column; }

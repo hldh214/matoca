@@ -93,11 +93,11 @@ the user to choose a `加盟店`; it currently lists `炭焼きレストラン �
 
 On a merchant page:
 
-- The initial filter is `受付中のみ`, so shops that can accept a queue request are shown
+- The initial filter is `受付可能`, so shops that can accept a queue request are shown
   first without extra interaction.
 - Every shop row shows the current number of waiting groups and Matoca's `公式目安`.
 - Global party settings are available from the header. New installations default to
-  `成人 2 人` and `子供 0 人`; each shop's live form limits are still applied when the
+  `大人 2 人` and `子ども 0 人`; each shop's live form limits are still applied when the
   join dialog opens.
 - Joining and cancelling are explicit `手動操作`. This phase does not schedule a future
   arrival time or automatically submit a queue request.

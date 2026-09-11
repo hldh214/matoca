@@ -100,31 +100,16 @@ def build_console(
     *,
     stale_after: timedelta,
 ) -> MerchantConsoleData:
-    observations = [
-        stored_shop.observation
-        for stored_shop in stored_shops
-        if stored_shop.observation is not None
-    ]
-    detail_timestamps = [
-        stored_shop.last_detail_at
-        for stored_shop in stored_shops
-        if stored_shop.last_detail_at is not None
-    ]
-    oldest_detail_at = min(detail_timestamps) if detail_timestamps else None
     stale = catalog is None or not catalog.complete or poll_state.error_code is not None
-    stale = stale or any(not observation.detail_fresh for observation in observations)
-    stale = stale or len(observations) != len(stored_shops)
-    stale = stale or (
-        bool(stored_shops) and (oldest_detail_at is None or now - oldest_detail_at > stale_after)
-    )
     stale = stale or (catalog is not None and now - catalog.observed_at > stale_after)
     shops = [
         console_item(
             stored_shop.shop,
             detail_fresh=(
-                not stale
-                and stored_shop.observation is not None
+                stored_shop.observation is not None
                 and stored_shop.observation.detail_fresh
+                and stored_shop.last_detail_at is not None
+                and now - stored_shop.last_detail_at <= stale_after
             ),
             observed_at=(
                 stored_shop.observation.observed_at if stored_shop.observation is not None else None

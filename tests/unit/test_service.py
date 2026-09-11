@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta, tzinfo
@@ -15,7 +16,7 @@ from matoca_service.collection.models import CollectedShop, CollectionCycle
 from matoca_service.collection.schedule import PollSchedule
 from matoca_service.collection.service import CollectionService
 from matoca_service.config import MerchantRegistry
-from matoca_service.line.models import LiffToken
+from matoca_service.line.models import LiffToken, NativeTokenPair
 from matoca_service.matoca.client import MatocaApiError, MatocaClient, ShopCatalog
 from matoca_service.matoca.models import Shop, ShopForms, Waiting
 from matoca_service.service import (
@@ -454,6 +455,165 @@ def test_queue_submission_rejects_second_active_queue() -> None:
 
     with pytest.raises(QueueUnavailableError, match="すでに受付中"):
         validate_queue_submission(shop, submission, [Waiting(id=125000001)])
+
+
+def confirmation_field(*indices: int) -> dict[str, object]:
+    return {
+        "enable": True,
+        "title": "呼び出し時の確認",
+        "sub_items": [
+            {"enable": True, "disabled": False, "sub_item_index": index, "text": "了承しました"}
+            for index in indices
+        ],
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+@pytest.mark.parametrize(
+    ("live_fields", "answer1", "answer2", "accepted"),
+    [
+        pytest.param([], 0, None, True, id="no-confirmations"),
+        pytest.param(None, 0, None, True, id="null-confirmations"),
+        pytest.param([confirmation_field(2)], 2, None, True, id="sole-enabled-choice"),
+        pytest.param([confirmation_field(1, 2)], 2, None, True, id="explicit-multiple-choice"),
+        pytest.param([confirmation_field(2), confirmation_field(4)], 2, 4, True, id="two-fields"),
+        pytest.param(
+            [{"enable": False}, confirmation_field(4)], 0, 4, True, id="preserve-second-slot"
+        ),
+        pytest.param([confirmation_field(3)], 2, None, False, id="live-choice-changed"),
+        pytest.param([confirmation_field(1, 2)], None, None, False, id="missing-choice"),
+        pytest.param([confirmation_field(2)], 2, 99, False, id="crafted-unused-answer"),
+        pytest.param([], 2, None, False, id="removed-confirmation"),
+        pytest.param([confirmation_field(2)] * 3, 2, 2, False, id="unsupported-third-field"),
+        pytest.param([confirmation_field()], 0, None, False, id="no-enabled-choices"),
+        pytest.param([None], 0, None, False, id="malformed-field"),
+        pytest.param({"enable": True}, 0, None, False, id="malformed-field-list"),
+        pytest.param([confirmation_field(2) | {"title": None}], 2, None, False, id="missing-title"),
+        pytest.param([confirmation_field(2, 2)], 2, None, False, id="duplicate-indices"),
+        pytest.param([confirmation_field(-1)], -1, None, False, id="negative-index"),
+        pytest.param(
+            [
+                confirmation_field(2)
+                | {
+                    "sub_items": [
+                        {"enable": True, "disabled": True, "sub_item_index": 2, "text": "無効"},
+                        {
+                            "enable": True,
+                            "disabled": False,
+                            "sub_item_index": 3,
+                            "text": "了承しました",
+                        },
+                    ]
+                }
+            ],
+            2,
+            None,
+            False,
+            id="choice-disabled",
+        ),
+        pytest.param(
+            [
+                confirmation_field(2)
+                | {
+                    "sub_items": [
+                        {"enable": True, "disabled": False, "sub_item_index": 2, "text": None},
+                    ]
+                }
+            ],
+            2,
+            None,
+            False,
+            id="missing-choice-text",
+        ),
+        pytest.param(
+            [confirmation_field(2) | {"enable": "true"}], 2, None, False, id="invalid-enable"
+        ),
+        pytest.param(
+            [
+                confirmation_field(2)
+                | {
+                    "sub_items": [
+                        {
+                            "enable": True,
+                            "disabled": [],
+                            "sub_item_index": 2,
+                            "text": "了承しました",
+                        },
+                    ]
+                }
+            ],
+            2,
+            None,
+            False,
+            id="malformed-disabled-flag",
+        ),
+    ],
+)
+async def test_create_waiting_validates_live_confirmations_before_upstream_create(
+    stored_service: tuple[MatocaService, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    live_fields: object,
+    answer1: int | None,
+    answer2: int | None,
+    accepted: bool,
+) -> None:
+    service, _ = stored_service
+
+    async def native(*args: object, **kwargs: object) -> NativeTokenPair:
+        return NativeTokenPair("synthetic-access", "synthetic-refresh")
+
+    async def liff(*args: object, **kwargs: object) -> LiffToken:
+        return LiffToken(
+            "synthetic-liff",
+            "synthetic-id",
+            "synthetic-context",
+            datetime(2026, 9, 11, tzinfo=UTC),
+            datetime(2030, 1, 1, tzinfo=UTC),
+        )
+
+    monkeypatch.setattr(service_module.TokenManager, "ensure_native_token", native)
+    monkeypatch.setattr(service_module.TokenManager, "ensure_liff_token", liff)
+    base = "https://admin.junbanmachi.jp/liff"
+    respx.post(f"{base}/auth").respond(200, json={"status": "success"})
+    live_shop = Shop(
+        id=3272,
+        name="Synthetic Shop",
+        lat=34.0,
+        lng=137.0,
+        is_open=True,
+        is_issuable=True,
+        forms=ShopForms.model_validate(
+            {"min_adult": 1, "max_adult": 8, "confirm_items": live_fields}
+        ),
+    )
+    detail = respx.get(f"{base}/shops/3272").respond(
+        200,
+        json={"status": "success", "content": {"shop": live_shop.model_dump(mode="json")}},
+    )
+    respx.get(f"{base}/waiting").respond(200, json={"status": "success", "content": []})
+    create = respx.post(f"{base}/waiting").respond(
+        200,
+        json={"status": "success", "content": {"id": 42, "shop_id": 3272}},
+    )
+    submission = QueueSubmission(
+        shop_id=3272,
+        adult_count=2,
+        child_count=0,
+        answer1=answer1,
+        answer2=answer2,
+    )
+
+    if accepted:
+        waiting = await service.create_waiting("sawayaka", submission)
+        assert waiting.id == 42
+        payload = json.loads(create.calls.last.request.content)
+        assert (payload["answer1"], payload["answer2"]) == (answer1, answer2)
+    else:
+        with pytest.raises(QueueUnavailableError, match="選択内容の確認が必要です"):
+            await service.create_waiting("sawayaka", submission)
+        assert not create.called
+    assert detail.called
 
 
 class SerializedTestService(MatocaService):

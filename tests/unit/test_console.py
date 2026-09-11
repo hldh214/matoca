@@ -97,7 +97,7 @@ def test_console_item_preserves_official_observation_without_prediction_fields()
         (timedelta(minutes=10), timedelta(minutes=11), True),
     ],
 )
-def test_console_stales_catalog_or_oldest_detail_after_poll_threshold(
+def test_console_reports_catalog_staleness_without_overriding_fresh_detail(
     catalog_age: timedelta,
     detail_age: timedelta,
     expected_stale: bool,
@@ -127,8 +127,56 @@ def test_console_stales_catalog_or_oldest_detail_after_poll_threshold(
 
     assert console.stale is expected_stale
     assert (console.shops[0].status, console.shops[0].status_label, console.shops[0].can_join) == (
-        ("stale", "更新待ち", False) if expected_stale else ("available", "受付可能", True)
+        ("stale", "更新待ち", False)
+        if detail_age > timedelta(minutes=10)
+        else ("available", "受付可能", True)
     )
+
+
+@pytest.mark.parametrize("stale_reason", ["failed_detail", "expired_detail", "missing_detail"])
+def test_mixed_console_keeps_fresh_shops_joinable(stale_reason: str) -> None:
+    now = datetime(2026, 9, 11, 8, tzinfo=UTC)
+    fresh = Shop(
+        id=1,
+        name="Fresh",
+        is_open=True,
+        is_issuable=True,
+        waiting_time=WaitingEstimate(minutes=15),
+    )
+    stale = fresh.model_copy(update={"id": 2, "name": "Stale"})
+    stale_at = now - timedelta(minutes=11) if stale_reason == "expired_detail" else now
+    console = build_console(
+        MerchantSummary(key="sawayaka", name="Synthetic Merchant"),
+        [
+            StoredShop("sawayaka", fresh, ShopObservation(fresh, True, True, observed_at=now), now),
+            StoredShop(
+                "sawayaka",
+                stale,
+                None
+                if stale_reason == "missing_detail"
+                else ShopObservation(
+                    stale,
+                    True,
+                    stale_reason != "failed_detail",
+                    observed_at=stale_at,
+                ),
+                None if stale_reason == "missing_detail" else stale_at,
+            ),
+        ],
+        CatalogState(observed_at=now, complete=True),
+        MerchantPollState(merchant_key="sawayaka"),
+        now,
+        stale_after=timedelta(minutes=10),
+    )
+
+    assert console.stale is True
+    assert (console.available_count, console.total_count) == (1, 2)
+    assert [
+        (item.status, item.can_join, item.official_waiting_minutes) for item in console.shops
+    ] == [
+        ("available", True, 15),
+        ("stale", False, None),
+    ]
 
 
 @pytest.mark.asyncio

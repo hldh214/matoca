@@ -33,3 +33,22 @@ def test_console_interface_messages_are_japanese() -> None:
         assert not re.search(
             r"[\'\"](?:Loading|Failed to|Error:|Please |Submit|Cancel|Settings)", source
         ), asset.name
+
+
+def test_mobile_queue_reserves_height_and_contains_long_content() -> None:
+    css = (STATIC / "merchant.css").read_text()
+    mobile = css.split("@media (max-width: 760px)")[1]
+    queue = re.search(r"\.queue-band\s*\{([^}]+)\}", mobile)
+    assert queue is not None
+    declarations = dict(
+        (key.strip(), value.strip())
+        for key, value in re.findall(r"([\w-]+)\s*:\s*([^;]+);", queue.group(1))
+    )
+    assert re.fullmatch(r"[\d.]+(?:px|rem)", declarations["height"]), (
+        "Queue transitions must not change the mobile band's reserved height"
+    )
+    assert declarations.get("grid-template-rows") == "auto minmax(0, 1fr)"
+    content = re.findall(r"\.queue-content\s*\{([^}]+)\}", css)
+    assert any("overflow: auto" in rule and "min-height: 0" in rule for rule in content), (
+        "Long queue/error content must scroll inside the band instead of overlapping the list"
+    )
