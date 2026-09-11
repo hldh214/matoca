@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -8,6 +9,12 @@ from matoca_service.matoca.models import CreateWaitingRequest, Shop, Waiting
 
 class MatocaApiError(RuntimeError):
     """Raised when Matoca rejects a request or returns an invalid envelope."""
+
+
+@dataclass(frozen=True)
+class ShopCatalog:
+    shops: list[Shop]
+    complete: bool
 
 
 class MatocaClient:
@@ -94,13 +101,16 @@ class MatocaClient:
         return [Waiting.model_validate(waiting) for waiting in content]
 
     async def list_all_shops(self) -> list[Shop]:
+        return (await self.read_shop_catalog()).shops
+
+    async def read_shop_catalog(self) -> ShopCatalog:
         shops: list[Shop] = []
         for page in range(1, self.MAX_SHOP_PAGES + 1):
             page_shops = await self.list_shops(page=page)
             if not page_shops:
-                break
+                return ShopCatalog(shops, complete=True)
             shops.extend(page_shops)
-        return shops
+        return ShopCatalog(shops, complete=False)
 
     async def get_shop(self, shop_id: int) -> Shop:
         response = await self._http.get(

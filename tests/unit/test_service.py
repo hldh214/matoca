@@ -15,7 +15,7 @@ from matoca_service.collection.schedule import PollSchedule
 from matoca_service.collection.service import CollectionService
 from matoca_service.config import MerchantRegistry
 from matoca_service.line.models import LiffToken
-from matoca_service.matoca.client import MatocaApiError
+from matoca_service.matoca.client import MatocaApiError, MatocaClient, ShopCatalog
 from matoca_service.matoca.models import Shop, ShopForms, Waiting
 from matoca_service.service import (
     DashboardData,
@@ -452,6 +452,9 @@ class FakeCycleClient:
         self.events.append("list")
         return self.base_shops
 
+    async def read_shop_catalog(self) -> ShopCatalog:
+        return ShopCatalog(await self.list_all_shops(), complete=True)
+
     async def get_shop(self, shop_id: int) -> Shop:
         assert self.events[0] == "list"
         self.active_details += 1
@@ -494,6 +497,9 @@ class RetryRaceClient:
     async def list_all_shops(self) -> list[Shop]:
         self.attempt += 1
         return self.base_shops
+
+    async def read_shop_catalog(self) -> ShopCatalog:
+        return ShopCatalog(await self.list_all_shops(), complete=True)
 
     async def get_shop(self, shop_id: int) -> Shop:
         self.active_details += 1
@@ -749,6 +755,126 @@ async def test_detail_429_persists_partial_evidence_and_durable_backoff(tmp_path
     assert len(client.launched) < 9
     await coordinator.run_once()
     assert len(client.launched) < 9
+
+
+@pytest.mark.asyncio
+async def test_detail_429_deadline_survives_failed_observation_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    current = datetime(2026, 9, 11, 8, tzinfo=UTC)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            return current if tz is None else current.astimezone(tz)
+
+    monkeypatch.setattr("matoca_service.service.datetime", FixedDatetime)
+    error = status_error(429)
+    error.response.headers["Retry-After"] = "180"
+    client = FakeCycleClient(
+        [Shop(id=1, name="Partial", current_waiting=8)], {}, detail_error=error
+    )
+    database = Database(tmp_path / "data" / "matoca.db")
+    database.initialize()
+    repository = ShopRepository(database)
+    database.write(
+        lambda connection: connection.execute("""
+        CREATE TRIGGER fail_observation BEFORE INSERT ON shop_observations
+        BEGIN SELECT RAISE(ABORT, 'synthetic observation failure'); END
+    """)
+    )
+    collector = CollectionService(CycleReadTestService(client), repository)
+    registry = MerchantRegistry.model_validate(
+        {"merchants": {"sawayaka": MerchantRegistry.load_builtin().merchants["sawayaka"]}}
+    )
+    coordinator = CollectionCoordinator(
+        registry, collector, PollSchedule(repository), repository, now=lambda: current
+    )
+    await coordinator.run_once()
+    deadline = datetime(2026, 9, 11, 8, 3, tzinfo=UTC)
+    state = repository.poll_state("sawayaka")
+    assert state.retry_at == deadline
+    assert state.error_code == "rate_limited"
+    assert state.last_success_at is None
+    assert repository.latest("sawayaka") == []
+
+    # Both forced requests and a restarted coordinator must honor durable Retry-After.
+    current += timedelta(minutes=1)
+    await coordinator.collect("sawayaka")
+    restarted = CollectionCoordinator(
+        registry, collector, PollSchedule(repository), repository, now=lambda: current
+    )
+    await restarted.run_once()
+    assert client.events.count("list") == 1
+
+    # Recover the original partial evidence before collecting a newer observation.
+    database.write(lambda connection: connection.execute("DROP TRIGGER fail_observation"))
+    client.detail_error = None
+    client.details[1] = Shop(id=1, name="Current", is_open=True)
+    current = deadline
+    await restarted.run_once()
+    observations = repository.observations("sawayaka", 1, limit=10)
+    assert len(observations) == 2
+    assert observations[1].observed_at == datetime(2026, 9, 11, 8, tzinfo=UTC)
+    assert observations[1].current_waiting == 8
+    assert observations[1].error_code == "rate_limited"
+    assert repository.poll_state("sawayaka").last_success_at == deadline
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nonempty_pages", [0, 19, 20])
+async def test_paginated_collection_replaces_membership_only_after_authoritative_end(
+    tmp_path: Path, nonempty_pages: int
+) -> None:
+    database = Database(tmp_path / "data" / "matoca.db")
+    database.initialize()
+    repository = ShopRepository(database)
+    repository.save_cycle(
+        CollectionWrite(
+            "sawayaka",
+            datetime(2026, 9, 10, 8, tzinfo=UTC),
+            [ShopObservation(Shop(id=21, name="Known omitted member"), True, True)],
+        )
+    )
+    requested_pages: list[int] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        if request.url.path == "/liff/shops":
+            page = int(request.url.params["page"])
+            requested_pages.append(page)
+            content = {
+                "shops": [{"id": page, "name": f"Shop {page}"}] if page <= nonempty_pages else []
+            }
+        elif request.url.path == "/liff/waiting":
+            content = []
+        else:
+            shop_id = int(request.url.path.rsplit("/", 1)[1])
+            content = {"shop": {"id": shop_id, "name": f"Shop {shop_id}", "is_open": True}}
+        return httpx.Response(200, json={"status": "success", "content": content})
+
+    merchant = (
+        MerchantRegistry.load_builtin()
+        .merchants["sawayaka"]
+        .model_copy(update={"api_base_url": "https://synthetic.example.test"})
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as http:
+        client = MatocaClient(merchant, http, "synthetic-liff")
+        cycle = await CollectionService(CycleReadTestService(client), repository).collect(
+            "sawayaka"
+        )
+
+    stored_ids = {item.shop.id for item in repository.latest("sawayaka")}
+    if nonempty_pages == 20:
+        assert 21 in stored_ids, "a capped list must not remove known shops beyond the cap"
+        assert len(stored_ids) == 21
+        assert cycle.catalog_complete is False
+        assert repository.catalog_state("sawayaka").complete is False
+    else:
+        assert stored_ids == set(range(1, nonempty_pages + 1))
+        assert cycle.catalog_complete is True
+        assert repository.catalog_state("sawayaka").complete is True
+    assert requested_pages == list(range(1, min(nonempty_pages + 1, 20) + 1))
 
 
 @pytest.mark.asyncio

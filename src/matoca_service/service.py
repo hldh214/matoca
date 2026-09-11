@@ -267,7 +267,8 @@ class MatocaService:
             observed_at = datetime.now(tz=UTC)
 
             async def fetch(client: MatocaClient) -> CollectionCycle:
-                base_shops = await client.list_all_shops()
+                catalog = await client.read_shop_catalog()
+                base_shops = catalog.shops
                 semaphore = asyncio.Semaphore(4)
                 rate_limit: CollectionRateLimited | None = None
 
@@ -338,6 +339,7 @@ class MatocaService:
                     shops=[task.result() for task in detail_tasks],
                     waiting=waiting_task.result(),
                     rate_limit=rate_limit,
+                    catalog_complete=catalog.complete,
                 )
 
             return await self._authenticated_read(merchant_key, fetch)
