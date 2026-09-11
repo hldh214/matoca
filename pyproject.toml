@@ -35,6 +35,14 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/matoca_service"]
+artifacts = [
+    "/src/matoca_service/web/static/**",
+    "/src/matoca_service/web/templates/**",
+]
+
+[tool.hatch.build.targets.sdist.force-include]
+"src/matoca_service/web/static" = "src/matoca_service/web/static"
+"src/matoca_service/web/templates" = "src/matoca_service/web/templates"
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"

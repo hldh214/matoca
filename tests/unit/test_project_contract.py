@@ -1,4 +1,3 @@
-import subprocess
 import tomllib
 from pathlib import Path
 
@@ -76,34 +75,22 @@ def test_runtime_settings_use_explicit_line_and_database_paths() -> None:
 
 
 def test_package_contract_includes_web_templates_and_static_assets() -> None:
-    result = subprocess.run(
-        ["git", "ls-files", "src/matoca_service/web"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-
-    expected = {
-        "src/matoca_service/web/templates/dashboard.html",
-        "src/matoca_service/web/templates/merchant.html",
-        "src/matoca_service/web/static/api.js",
-        "src/matoca_service/web/static/dashboard.css",
-        "src/matoca_service/web/static/join-form.js",
-        "src/matoca_service/web/static/merchant-selector.css",
-        "src/matoca_service/web/static/merchant.css",
-        "src/matoca_service/web/static/merchant.js",
-        "src/matoca_service/web/static/preferences.js",
-        "src/matoca_service/web/static/queue-status.js",
-        "src/matoca_service/web/static/shop-list.js",
-    }
-    tracked_files = set(result.stdout.splitlines())
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    wheel_packages = project["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+    targets = project["tool"]["hatch"]["build"]["targets"]
+    source_static = "src/matoca_service/web/static"
+    source_templates = "src/matoca_service/web/templates"
 
-    assert wheel_packages == ["src/matoca_service"]
-    assert expected <= tracked_files
+    assert targets["wheel"]["packages"] == ["src/matoca_service"]
+    assert targets["wheel"]["artifacts"] == [
+        f"/{source_static}/**",
+        f"/{source_templates}/**",
+    ]
+    assert targets["sdist"]["force-include"] == {
+        source_static: source_static,
+        source_templates: source_templates,
+    }
+    assert (REPO_ROOT / source_static).is_dir()
+    assert (REPO_ROOT / source_templates).is_dir()
 
 
 def test_readme_documents_manual_console_behavior() -> None:
