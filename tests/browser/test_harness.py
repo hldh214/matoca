@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -23,6 +24,7 @@ PROBE_PATH = Path(__file__).with_name("diagnostics_probe.py")
 
 def run_diagnostics_probe(
     test_name: str,
+    tmp_path: Path,
     *,
     environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -42,6 +44,11 @@ def run_diagnostics_probe(
             "-q",
             "-p",
             "no:cacheprovider",
+            "--output",
+            str(tmp_path / "probe-artifacts"),
+            "--tracing=retain-on-failure",
+            "--screenshot=only-on-failure",
+            "--full-page-screenshot",
         ],
         cwd=PROBE_PATH.parents[2],
         env=probe_environment,
@@ -116,10 +123,10 @@ async def test_fake_service_exposes_supported_merchants_and_shop_states() -> Non
         "lng": 137.7,
         "current_waiting": 8,
         "forms": {
-            "min_adult": 1,
-            "max_adult": 6,
-            "min_child": 0,
-            "max_child": 4,
+            "min_adult": 2,
+            "max_adult": 5,
+            "min_child": 1,
+            "max_child": 3,
             "confirm_items": [
                 {
                     "enable": True,
@@ -184,17 +191,44 @@ def test_isolated_home_loads_without_external_requests(
     assert_clean_browser()
 
 
-def test_console_error_without_helper_fails_automatically() -> None:
-    result = run_diagnostics_probe("test_automatic_console_error_probe")
+def test_console_error_without_helper_fails_automatically(tmp_path: Path) -> None:
+    artifact_dir = tmp_path / "probe-artifacts"
+    result = run_diagnostics_probe(
+        "test_automatic_console_error_probe",
+        tmp_path,
+    )
     output = result.stdout + result.stderr
 
     assert result.returncode == 1, output
     assert "automatic teardown probe" in output
-    assert "ERROR at teardown" in output
+    assert output.count("ERROR at teardown") == 1
+    assert "1 error" in output
+    screenshots = list(artifact_dir.rglob("*.png"))
+    traces = list(artifact_dir.rglob("*.zip"))
+    assert len(screenshots) == len(traces) == 1, (screenshots, traces, output)
+    assert screenshots[0].stat().st_size > 0
+    assert traces[0].stat().st_size > 0
 
 
-def test_call_failure_reports_diagnostics_without_second_teardown_error() -> None:
-    result = run_diagnostics_probe("test_call_failure_console_error_probe")
+def test_child_probe_preserves_parent_artifacts(tmp_path: Path) -> None:
+    artifact_dir = tmp_path / "parent-artifacts"
+    artifact_dir.mkdir()
+    artifact = artifact_dir / "parent-failure.png"
+    artifact.write_bytes(b"previous parent artifact")
+
+    result = run_diagnostics_probe(
+        "test_automatic_console_error_probe",
+        tmp_path,
+        environment={"PYTEST_ADDOPTS": f"--output={artifact_dir}"},
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert artifact.is_file(), "child pytest deleted a parent failure artifact"
+    assert artifact.read_bytes() == b"previous parent artifact"
+
+
+def test_call_failure_reports_diagnostics_without_second_teardown_error(tmp_path: Path) -> None:
+    result = run_diagnostics_probe("test_call_failure_console_error_probe", tmp_path)
     output = result.stdout + result.stderr
 
     assert result.returncode == 1, output
@@ -211,8 +245,68 @@ def test_safe_page_closes_before_loopback_server(
 
     result = run_diagnostics_probe(
         "test_page_close_order_probe",
+        tmp_path,
         environment={"MATOCA_CLOSE_PROBE": str(marker)},
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert marker.read_text(encoding="utf-8") == "200"
+    assert list((tmp_path / "probe-artifacts").rglob("*.png")) == []
+    assert list((tmp_path / "probe-artifacts").rglob("*.zip")) == []
+
+
+@pytest.mark.parametrize(
+    ("probe", "diagnostic", "attempt"),
+    [
+        ("test_popup_http_guard_probe", "external requests:", "/popup-http-probe"),
+        ("test_websocket_guard_probe", "blocked WebSockets:", "/websocket-probe"),
+    ],
+)
+def test_context_blocks_alternate_origin_without_contacting_it(
+    tmp_path: Path, probe: str, diagnostic: str, attempt: str
+) -> None:
+    marker = tmp_path / "network-requests.json"
+    result = run_diagnostics_probe(
+        probe,
+        tmp_path,
+        environment={"MATOCA_NETWORK_PROBE": str(marker)},
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "ERROR at teardown" in output
+    assert diagnostic in output, output
+    assert attempt in output, output
+    assert json.loads(marker.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.parametrize("page_kind", ["popup", "new_page"])
+@pytest.mark.parametrize("diagnostic_kind", ["console", "error"])
+def test_additional_context_pages_fail_on_unexpected_diagnostics(
+    tmp_path: Path, page_kind: str, diagnostic_kind: str
+) -> None:
+    result = run_diagnostics_probe(
+        "test_additional_page_diagnostics_probe",
+        tmp_path,
+        environment={
+            "MATOCA_PAGE_KIND": page_kind,
+            "MATOCA_DIAGNOSTIC_KIND": diagnostic_kind,
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "ERROR at teardown" in output
+    assert f"additional page {diagnostic_kind} diagnostic" in output
+
+
+def test_service_workers_are_blocked(safe_page: Page, browser_base_url: str) -> None:
+    safe_page.goto(browser_base_url)
+
+    registered = safe_page.evaluate(
+        """async () => Boolean(await navigator.serviceWorker.register(
+            '/static/shop-list.js', {type: 'module'}))"""
+    )
+
+    assert registered is False
+    assert safe_page.context.service_workers == []

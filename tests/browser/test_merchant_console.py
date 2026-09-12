@@ -84,7 +84,7 @@ def test_saved_settings_apply_to_the_next_join_dialog(
     safe_page.get_by_role("button", name="今すぐ受付").click()
     join_dialog = wait_for_dialog_ready(safe_page, "浜松テスト店", "#join-form")
     expect(join_dialog.locator("#adult-count")).to_have_text("2")
-    expect(join_dialog.locator("#child-count")).to_have_text("0")
+    expect(join_dialog.locator("#child-count")).to_have_text("1")
     join_dialog.get_by_role("button", name="閉じる").click()
     expect(join_dialog).to_be_hidden()
 
@@ -133,8 +133,31 @@ def test_joins_and_cancels_a_synthetic_queue(
     safe_page.get_by_role("button", name="今すぐ受付").click()
     join_dialog = wait_for_dialog_ready(safe_page, "浜松テスト店", "#join-form")
 
-    join_dialog.get_by_role("button", name="大人を増やす").click()
-    join_dialog.get_by_role("button", name="子どもを増やす").click()
+    for counter, label, minimum, maximum, submitted in [
+        ("adult", "大人", 2, 5, 3),
+        ("child", "子ども", 1, 3, 1),
+    ]:
+        count = join_dialog.locator(f"#{counter}-count")
+        decrease = join_dialog.get_by_role("button", name=f"{label}を減らす")
+        increase = join_dialog.get_by_role("button", name=f"{label}を増やす")
+        expect(count).to_have_text(str(minimum))
+        for value in range(minimum + 1, maximum + 1):
+            expect(increase).to_be_enabled()
+            increase.click()
+            expect(count).to_have_text(str(value))
+        expect(increase).to_be_disabled()
+        increase.dispatch_event("click")
+        expect(count).to_have_text(str(maximum))
+        for value in range(maximum - 1, minimum - 1, -1):
+            expect(decrease).to_be_enabled()
+            decrease.click()
+            expect(count).to_have_text(str(value))
+        expect(decrease).to_be_disabled()
+        decrease.dispatch_event("click")
+        expect(count).to_have_text(str(minimum))
+        for _ in range(submitted - minimum):
+            increase.click()
+        expect(count).to_have_text(str(submitted))
     confirmation = join_dialog.get_by_role("combobox", name="注意事項を確認しましたか")
     expect(confirmation).to_have_value("1")
     expect(confirmation).to_be_enabled()
@@ -168,7 +191,10 @@ def test_joins_and_cancels_a_synthetic_queue(
     }
     queue_band = safe_page.get_by_role("region", name="現在の順番待ち")
     expect(queue_band.get_by_text("101", exact=True)).to_be_visible()
-    expect(safe_page.locator(".join-button:enabled")).to_have_count(0)
+    join_actions = safe_page.get_by_role("button", name="順番待ち受付中", exact=True)
+    expect(join_actions).to_have_count(4)
+    for action in join_actions.all():
+        expect(action).to_be_disabled()
 
     queue_band.get_by_role("button", name="取消").click()
     cancel_dialog = safe_page.get_by_role("dialog", name="順番待ちを取り消しますか")

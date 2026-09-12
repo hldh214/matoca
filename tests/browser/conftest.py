@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import threading
 from collections.abc import Callable, Generator
+from copy import copy
 from dataclasses import dataclass, field
 from time import monotonic
 from typing import TYPE_CHECKING, Any
@@ -16,7 +17,15 @@ from matoca_service.web.app import create_app
 from .fake_service import BrowserFakeService
 
 if TYPE_CHECKING:
-    from playwright.sync_api import BrowserContext, ConsoleMessage, Error, Page, Request, Route
+    from playwright.sync_api import (
+        BrowserContext,
+        ConsoleMessage,
+        Page,
+        Request,
+        Route,
+        WebError,
+        WebSocketRoute,
+    )
     from pytest_playwright.pytest_playwright import CreateContextCallback
 
 DEFAULT_VIEWPORT = (1440, 900)
@@ -58,6 +67,7 @@ class BrowserDiagnostics:
     console_errors: list[str] = field(default_factory=list)
     request_failures: list[str] = field(default_factory=list)
     external_requests: list[str] = field(default_factory=list)
+    blocked_websockets: list[str] = field(default_factory=list)
 
     def render(self) -> str:
         problems: list[str] = []
@@ -69,6 +79,8 @@ class BrowserDiagnostics:
             problems.append(f"failed requests: {self.request_failures!r}")
         if self.external_requests:
             problems.append(f"external requests: {self.external_requests!r}")
+        if self.blocked_websockets:
+            problems.append(f"blocked WebSockets: {self.blocked_websockets!r}")
         return "\n".join(problems)
 
     def assert_clean(self) -> None:
@@ -142,6 +154,7 @@ def browser_context_args(
     if callspec is not None and "viewport" in callspec.params:
         viewport = callspec.params["viewport"]
     args["viewport"] = {"width": viewport[0], "height": viewport[1]}
+    args["service_workers"] = "block"
     return args
 
 
@@ -159,10 +172,10 @@ def safe_page(
 ) -> Generator[Page]:
     diagnostics = _browser_diagnostics
     context: BrowserContext = new_context()
-    page = context.new_page()
+    blocked_websockets: list[WebSocketRoute] = []
 
-    def record_page_error(error: Error) -> None:
-        diagnostics.page_errors.append(str(error))
+    def record_page_error(error: WebError) -> None:
+        diagnostics.page_errors.append(str(error.error))
 
     def record_console_error(message: ConsoleMessage) -> None:
         if message.type == "error":
@@ -181,14 +194,27 @@ def safe_page(
             diagnostics.external_requests.append(route.request.url)
             route.abort("blockedbyclient")
 
-    page.on("pageerror", record_page_error)
-    page.on("console", record_console_error)
-    page.on("requestfailed", record_request_failure)
-    page.route("**/*", guard)
+    def block_websocket(websocket: WebSocketRoute) -> None:
+        diagnostics.blocked_websockets.append(websocket.url)
+        # A routed socket never contacts a server unless connect_to_server() is
+        # called. Defer close: Playwright 1.62 invokes this sync callback on its
+        # dispatcher greenlet, where calling the sync close() API would deadlock.
+        blocked_websockets.append(websocket)
+
+    # Context listeners include popups and their first navigation, before a page
+    # listener can be attached. WebSockets use a separate interception API.
+    context.on("weberror", record_page_error)
+    context.on("console", record_console_error)
+    context.on("requestfailed", record_request_failure)
+    context.route("**/*", guard)
+    context.route_web_socket("**/*", block_websocket)
+    page = context.new_page()
     try:
         yield page
     finally:
         page.wait_for_timeout(0)
+        for websocket in blocked_websockets:
+            websocket.close(code=1008, reason="Browser tests do not allow WebSockets")
         context.close()
         problems = diagnostics.render()
         if problems:
@@ -196,6 +222,13 @@ def safe_page(
             if call_report is not None and call_report.failed:
                 call_report.sections.append(("browser diagnostics", problems))
             else:
+                if call_report is not None:
+                    # pytest-playwright retains artifacts using rep_call during its
+                    # later recorder teardown. Keep the emitted call report intact:
+                    # this remains one teardown error, with failure-only artifacts.
+                    recorder_report = copy(call_report)
+                    recorder_report.outcome = "failed"
+                    request.node.rep_call = recorder_report
                 diagnostics.assert_clean()
 
 

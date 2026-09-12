@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from matoca_service.console import MerchantConsoleData, MerchantSummary, ShopConsoleItem
-from matoca_service.matoca.models import Shop, Waiting
+from matoca_service.matoca.models import Shop, ShopForms, Waiting
 from matoca_service.service import (
     DashboardData,
     MerchantSnapshot,
@@ -47,10 +47,10 @@ class BrowserFakeService:
                 "is_open": True,
                 "is_issuable": True,
                 "forms": {
-                    "min_adult": 1,
-                    "max_adult": 6,
-                    "min_child": 0,
-                    "max_child": 4,
+                    "min_adult": 2,
+                    "max_adult": 5,
+                    "min_child": 1,
+                    "max_child": 3,
                     "confirm_items": [
                         {
                             "enable": True,
@@ -93,6 +93,9 @@ class BrowserFakeService:
                 stale=True,
             ),
         ]
+        # Live detail is deliberately stricter than cached list limits and the
+        # global settings range (0..20), so the workflow must use the detail API.
+        self._console_shops[0].forms = ShopForms(min_adult=1, max_adult=6, min_child=0, max_child=4)
 
     @staticmethod
     def _console_item(
