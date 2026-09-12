@@ -144,14 +144,13 @@ uv run --group browser pytest -m browser \\
 status=${PIPESTATUS[0]}
 if (( status != 0 )); then
   echo \"::group::Browser pytest failure\"
-  tail -n 40 test-results/pytest.log
+  tail -n 80 test-results/pytest.log
   echo \"::endgroup::\"
-  while IFS= read -r line; do
-    line=${line//'%'/'%25'}
-    line=${line//$'\\r'/'%0D'}
-    line=${line//$'\\n'/'%0A'}
-    echo \"::error title=Browser pytest::${line}\"
-  done < <(tail -n 40 test-results/pytest.log)
+  details=$(tail -n 80 test-results/pytest.log)
+  details=${details//'%'/'%25'}
+  details=${details//$'\\r'/'%0D'}
+  details=${details//$'\\n'/'%0A'}
+  echo \"::error title=Browser pytest::${details}\"
 fi
 exit \"$status\"
 """,
