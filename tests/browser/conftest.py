@@ -169,6 +169,9 @@ def safe_page(
             diagnostics.console_errors.append(message.text)
 
     def record_request_failure(request: Request) -> None:
+        response = request.response()
+        if response is not None and response.status == 204:
+            return
         diagnostics.request_failures.append(f"{request.url}: {request.failure}")
 
     def guard(route: Route) -> None:

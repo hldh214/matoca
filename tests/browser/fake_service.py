@@ -18,6 +18,8 @@ class BrowserFakeService:
         self.preferences = PartyPreferences(default_adult_count=2, default_child_count=0)
         self.submissions: list[QueueSubmission] = []
         self.refresh_calls = 0
+        self.console_reads = 0
+        self.waiting_reads = 0
         self._waiting: dict[str, list[Waiting]] = {
             "sawayaka": [],
             "la_ohana_yokohamahonmoku": [],
@@ -161,6 +163,7 @@ class BrowserFakeService:
 
     async def merchant_console(self, merchant_key: str) -> MerchantConsoleData:
         merchant = self._merchant(merchant_key)
+        self.console_reads += 1
         shops = list(self._console_shops) if merchant_key == "sawayaka" else []
         return MerchantConsoleData(
             merchant=merchant,
@@ -209,6 +212,7 @@ class BrowserFakeService:
 
     async def current_waiting(self, merchant_key: str) -> list[Waiting]:
         self._merchant(merchant_key)
+        self.waiting_reads += 1
         return list(self._waiting[merchant_key])
 
     async def create_waiting(

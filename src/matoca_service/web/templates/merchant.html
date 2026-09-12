@@ -42,17 +42,17 @@
         <p id="updated-at" class="updated-at"></p>
       </section>
     </main>
-    <dialog id="settings-dialog" class="queue-dialog settings-dialog">
+    <dialog id="settings-dialog" class="queue-dialog settings-dialog" aria-labelledby="settings-title">
       <form method="dialog" id="settings-form">
         <button class="dialog-close" type="button" aria-label="閉じる">×</button>
-        <h2>設定</h2>
+        <h2 id="settings-title">設定</h2>
         <div class="counter-row"><label for="settings-adult-count">大人</label><div class="stepper"><button type="button" data-preference-step="adult" data-delta="-1" aria-label="大人を減らす">−</button><output id="settings-adult-count">2</output><button type="button" data-preference-step="adult" data-delta="1" aria-label="大人を増やす">＋</button></div></div>
         <div class="counter-row"><label for="settings-child-count">子ども</label><div class="stepper"><button type="button" data-preference-step="child" data-delta="-1" aria-label="子どもを減らす">−</button><output id="settings-child-count">0</output><button type="button" data-preference-step="child" data-delta="1" aria-label="子どもを増やす">＋</button></div></div>
         <p id="settings-error" class="form-error" role="alert"></p>
         <button type="submit" class="primary-button">設定を保存</button>
       </form>
     </dialog>
-    <dialog id="join-dialog" class="queue-dialog">
+    <dialog id="join-dialog" class="queue-dialog" aria-labelledby="join-shop-name">
       <form method="dialog" id="join-form">
         <button class="dialog-close" type="button" aria-label="閉じる">×</button>
         <p class="dialog-kicker">順番待ち</p>
@@ -65,11 +65,11 @@
         <button type="submit" class="primary-button">この内容で順番待ちを申し込む</button>
       </form>
     </dialog>
-    <dialog id="cancel-dialog" class="queue-dialog compact-dialog">
+    <dialog id="cancel-dialog" class="queue-dialog compact-dialog" aria-labelledby="cancel-title">
       <form method="dialog" id="cancel-form">
         <button class="dialog-close" type="button" aria-label="閉じる">×</button>
         <p class="dialog-kicker">確認</p>
-        <h2>順番待ちを取り消しますか？</h2>
+        <h2 id="cancel-title">順番待ちを取り消しますか？</h2>
         <p id="cancel-detail" class="dialog-status"></p>
         <p id="cancel-error" class="form-error" role="alert"></p>
         <button type="submit" class="danger-button">順番待ちを取り消す</button>
