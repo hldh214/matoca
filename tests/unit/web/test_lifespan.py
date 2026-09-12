@@ -1,9 +1,9 @@
 import asyncio
+from typing import cast
 
 import pytest
 
-from matoca_service.web.app import create_app
-from tests.unit.web.test_app import FakeDashboardService
+from matoca_service.web.app import DashboardService, create_app
 
 
 class RecordingCoordinator:
@@ -22,7 +22,8 @@ class RecordingCoordinator:
 @pytest.mark.asyncio
 async def test_lifespan_starts_and_stops_collection_coordinator() -> None:
     coordinator = RecordingCoordinator()
-    app = create_app(FakeDashboardService(), collection_coordinator=coordinator)
+    unused_service = cast(DashboardService, object())
+    app = create_app(unused_service, collection_coordinator=coordinator)
 
     async with app.router.lifespan_context(app):
         assert coordinator.started is True
