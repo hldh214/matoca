@@ -1,45 +1,12 @@
-import re
-import shlex
 import tomllib
 from pathlib import Path
+
+import yaml
 
 from matoca_service.config import LineConfig, MerchantRegistry, RuntimeSettings
 
 REPO_ROOT = Path(__file__).parents[2]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "browser-ui.yml"
-
-
-def _workflow_run_commands(workflow: str) -> list[list[str]]:
-    commands: list[list[str]] = []
-    lines = workflow.splitlines()
-    index = 0
-    while index < len(lines):
-        match = re.match(r"^(\s*)- run:\s*(.*)$", lines[index])
-        if match is None:
-            index += 1
-            continue
-
-        indentation, value = match.groups()
-        if value in {">", ">-", "|", "|-"}:
-            block: list[str] = []
-            index += 1
-            while index < len(lines):
-                line = lines[index]
-                if line.strip() and len(line) - len(line.lstrip()) <= len(indentation):
-                    break
-                if line.strip():
-                    block.append(line.strip())
-                index += 1
-            value = " ".join(block)
-        else:
-            index += 1
-
-        commands.append(shlex.split(value))
-    return commands
-
-
-def _command_selects_marker(command: list[str], marker: str) -> bool:
-    return any(command[index : index + 2] == ["-m", marker] for index in range(len(command) - 1))
 
 
 def test_runtime_templates_never_contain_credentials() -> None:
@@ -146,77 +113,47 @@ def test_readme_documents_manual_console_behavior() -> None:
         assert phrase in readme
 
 
-def test_browser_workflow_uses_frozen_uv_environment_and_matching_chromium() -> None:
-    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-    commands = _workflow_run_commands(workflow)
+def test_browser_workflow_has_exact_safe_job_contract() -> None:
+    workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
 
-    assert "on: [push, pull_request]" in workflow
-    assert "runs-on: ubuntu-latest" in workflow
-    assert "uses: actions/checkout@v4" in workflow
-    assert "uses: astral-sh/setup-uv@v6" in workflow
-    assert ["uv", "sync", "--group", "browser", "--frozen"] in commands
-    assert [
-        "uv",
-        "run",
-        "--group",
-        "browser",
-        "python",
-        "-m",
-        "playwright",
-        "install",
-        "--with-deps",
-        "chromium",
-    ] in commands
-
-
-def test_browser_workflow_overrides_default_marker_and_retains_failure_evidence() -> None:
-    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-    pytest_commands = [
-        command for command in _workflow_run_commands(workflow) if "pytest" in command
-    ]
-
-    assert len(pytest_commands) == 1
-    command = pytest_commands[0]
-    assert _command_selects_marker(command, "browser")
-    assert not _command_selects_marker(command, "not browser")
-    assert "--tracing" in command
-    assert command[command.index("--tracing") + 1] == "retain-on-failure"
-    assert "--screenshot" in command
-    assert command[command.index("--screenshot") + 1] == "only-on-failure"
-    assert "--full-page-screenshot" in command
-
-    artifact_step = re.search(
-        r"(?ms)^\s+- if: failure\(\)\s+uses: actions/upload-artifact@v4\s+with:\s+"
-        r"name: browser-test-results\s+path: test-results/\s*$",
-        workflow,
-    )
-    assert artifact_step is not None
-    assert workflow.count("uses: actions/upload-artifact@v4") == 1
+    assert workflow == {
+        "name": "Browser UI",
+        "on": ["push", "pull_request"],
+        "permissions": {"contents": "read"},
+        "jobs": {
+            "browser": {
+                "runs-on": "ubuntu-latest",
+                "steps": [
+                    {"uses": "actions/checkout@v4"},
+                    {"uses": "astral-sh/setup-uv@v6"},
+                    {"run": "uv sync --group browser --frozen"},
+                    {
+                        "run": "uv run --group browser python -m playwright install "
+                        "--with-deps chromium"
+                    },
+                    {
+                        "run": "uv run --group browser pytest -m browser "
+                        "--tracing retain-on-failure --screenshot only-on-failure "
+                        "--full-page-screenshot"
+                    },
+                    {
+                        "if": "failure()",
+                        "uses": "actions/upload-artifact@v4",
+                        "with": {
+                            "name": "browser-test-results",
+                            "path": "test-results/",
+                        },
+                    },
+                ],
+            }
+        },
+    }
 
 
-def test_browser_workflow_is_credential_free_and_least_privilege() -> None:
-    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-    normalized = workflow.casefold()
+def test_yaml_parser_is_a_direct_development_dependency() -> None:
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    permissions = re.search(
-        r"(?ms)^permissions:\s*\n(?P<body>(?:[ \t]+[^\n]+\n)+)",
-        workflow,
-    )
-    assert permissions is not None
-    assert [line.strip() for line in permissions.group("body").splitlines()] == ["contents: read"]
-    assert re.search(r"\$\{\{\s*secrets(?:\.|\[)", normalized) is None
-    for forbidden in (
-        "state.json",
-        "supervisor",
-        "destructive_refresh",
-        "destructive-refresh",
-        "-m live",
-        "192.168.",
-        "matoca.biwako.io",
-        "line-apps.com",
-        "junbanmachi.jp",
-    ):
-        assert forbidden not in normalized
+    assert "pyyaml>=6.0.3,<7" in project["dependency-groups"]["dev"]
 
 
 def test_readme_documents_isolated_browser_gate_and_failure_artifacts() -> None:
