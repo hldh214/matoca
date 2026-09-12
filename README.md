@@ -558,6 +558,39 @@ Rules for live tests:
 Successful live tests establish that the implementation reproduces the
 captured protocol against the real LINE service.
 
+### Browser UI tests
+
+The normal test suite excludes the separate `browser` marker and neither requires nor
+launches Chromium:
+
+```bash
+uv run pytest
+```
+
+Install the browser dependency group and its matching Chromium build before running the
+standalone browser gate:
+
+```bash
+uv sync --group browser
+uv run --group browser python -m playwright install --with-deps chromium
+uv run --group browser pytest -m browser \
+  --tracing retain-on-failure \
+  --screenshot only-on-failure \
+  --full-page-screenshot
+```
+
+These tests serve the real UI from an injected in-memory service on a temporary loopback
+address and block all external traffic. They use synthetic data, never read credentials,
+and never read or mutate a real queue. Failure screenshots and traces are written under
+`test-results/`. Open a retained trace with:
+
+```bash
+uv run --group browser playwright show-trace test-results/<test-name>/trace.zip
+```
+
+After upgrading Playwright, rerun the install command so its matching Chromium build is
+installed.
+
 ## Post-Phase-1 Interface Exploration
 
 After all Phase 1 offline tests pass and live refresh plus LIFF issuance are
