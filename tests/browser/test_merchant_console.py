@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -14,6 +15,8 @@ if TYPE_CHECKING:
     from playwright.sync_api import Locator, Page
 
 pytestmark = pytest.mark.browser
+TEST_CLOCK_START = datetime(2026, 9, 12, 12)
+TEST_CLOCK_PAUSED = datetime(2026, 9, 12, 12, 0, 1)
 
 
 def open_sawayaka_console(page: Page, browser_base_url: str) -> None:
@@ -115,7 +118,16 @@ def test_joins_and_cancels_a_synthetic_queue(
 ) -> None:
     from playwright.sync_api import expect
 
+    safe_page.clock.install(time=TEST_CLOCK_START)
     open_sawayaka_console(safe_page, browser_base_url)
+    safe_page.clock.pause_at(TEST_CLOCK_PAUSED)
+    waiting_url = f"{browser_base_url}/api/merchants/sawayaka/waiting"
+    response_events: list[tuple[str, str]] = []
+    safe_page.on(
+        "response",
+        lambda response: response_events.append((response.request.method, response.url)),
+    )
+    assert browser_service.waiting_reads == 1
     safe_page.get_by_role("button", name="すべて").click()
     expect(safe_page.locator(".shop-row")).to_have_count(4)
     safe_page.get_by_role("button", name="今すぐ受付").click()
@@ -126,8 +138,25 @@ def test_joins_and_cancels_a_synthetic_queue(
     confirmation = join_dialog.get_by_role("combobox", name="注意事項を確認しましたか")
     expect(confirmation).to_have_value("1")
     expect(confirmation).to_be_enabled()
-    join_dialog.get_by_role("button", name="この内容で順番待ちを申し込む").click()
+    event_offset = len(response_events)
+    with (
+        safe_page.expect_response(
+            lambda response: response.url == waiting_url and response.request.method == "POST"
+        ) as join_response_info,
+        safe_page.expect_request_finished(
+            lambda request: request.url == waiting_url and request.method == "GET",
+            timeout=5_000,
+        ) as join_reload_info,
+    ):
+        join_dialog.get_by_role("button", name="この内容で順番待ちを申し込む").click()
 
+    assert join_response_info.value.status == 200
+    assert join_reload_info.value.method == "GET"
+    assert [event for event in response_events[event_offset:] if event[1] == waiting_url] == [
+        ("POST", waiting_url),
+        ("GET", waiting_url),
+    ]
+    assert browser_service.waiting_reads == 2
     expect(join_dialog).to_be_hidden()
     assert browser_service.submissions[-1].model_dump() == {
         "shop_id": 3272,
@@ -144,8 +173,25 @@ def test_joins_and_cancels_a_synthetic_queue(
     queue_band.get_by_role("button", name="取消").click()
     cancel_dialog = safe_page.get_by_role("dialog", name="順番待ちを取り消しますか")
     expect(cancel_dialog).to_be_visible()
-    cancel_dialog.get_by_role("button", name="順番待ちを取り消す").click()
+    cancel_url = f"{waiting_url}/900000001"
+    event_offset = len(response_events)
+    with (
+        safe_page.expect_response(
+            lambda response: response.url == cancel_url and response.request.method == "DELETE"
+        ) as cancel_response_info,
+        safe_page.expect_request_finished(
+            lambda request: request.url == waiting_url and request.method == "GET",
+            timeout=5_000,
+        ) as cancel_reload_info,
+    ):
+        cancel_dialog.get_by_role("button", name="順番待ちを取り消す").click()
 
+    assert cancel_response_info.value.status == 204
+    assert cancel_reload_info.value.method == "GET"
+    assert [
+        event for event in response_events[event_offset:] if event[1] in {waiting_url, cancel_url}
+    ] == [("DELETE", cancel_url), ("GET", waiting_url)]
+    assert browser_service.waiting_reads == 3
     expect(cancel_dialog).to_be_hidden()
     expect(safe_page.get_by_text("現在の順番待ちはありません", exact=True)).to_be_visible()
     expect(safe_page.get_by_role("button", name="今すぐ受付")).to_be_enabled()
@@ -160,8 +206,9 @@ def test_manual_refresh_is_distinct_from_automatic_reads(
 ) -> None:
     from playwright.sync_api import expect
 
-    safe_page.clock.install()
+    safe_page.clock.install(time=TEST_CLOCK_START)
     open_sawayaka_console(safe_page, browser_base_url)
+    safe_page.clock.pause_at(TEST_CLOCK_PAUSED)
     assert browser_service.console_reads == 1
     assert browser_service.waiting_reads == 1
 
