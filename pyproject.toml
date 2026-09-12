@@ -32,6 +32,10 @@ dev = [
     "respx>=0.22,<0.23",
     "ruff>=0.12,<1",
 ]
+browser = [
+    "playwright>=1.60,<2",
+    "pytest-playwright>=0.7,<1",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/matoca_service"]
@@ -45,9 +49,10 @@ artifacts = [
 "src/matoca_service/web/templates" = "src/matoca_service/web/templates"
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-config --strict-markers"
+addopts = "-ra --strict-config --strict-markers -m 'not browser'"
 testpaths = ["tests"]
 markers = [
+    "browser: runs a synthetic Chromium UI test and requires the browser dependency group",
     "live: calls the real LINE service and is skipped by default",
     "destructive_refresh: rotates the configured native LINE credentials",
 ]
