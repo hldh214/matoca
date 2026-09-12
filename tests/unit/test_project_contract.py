@@ -132,9 +132,29 @@ def test_browser_workflow_has_exact_safe_job_contract() -> None:
                         "--with-deps chromium"
                     },
                     {
-                        "run": "uv run --group browser pytest -m browser "
-                        "--tracing retain-on-failure --screenshot only-on-failure "
-                        "--full-page-screenshot"
+                        "name": "Run isolated browser tests",
+                        "shell": "bash",
+                        "run": """mkdir -p test-results
+set +e
+set -o pipefail
+uv run --group browser pytest -m browser \\
+  --tracing retain-on-failure \\
+  --screenshot only-on-failure \\
+  --full-page-screenshot 2>&1 | tee test-results/pytest.log
+status=${PIPESTATUS[0]}
+if (( status != 0 )); then
+  echo \"::group::Browser pytest failure\"
+  tail -n 40 test-results/pytest.log
+  echo \"::endgroup::\"
+  while IFS= read -r line; do
+    line=${line//'%'/'%25'}
+    line=${line//$'\\r'/'%0D'}
+    line=${line//$'\\n'/'%0A'}
+    echo \"::error title=Browser pytest::${line}\"
+  done < <(tail -n 40 test-results/pytest.log)
+fi
+exit \"$status\"
+""",
                     },
                     {
                         "if": "failure()",
