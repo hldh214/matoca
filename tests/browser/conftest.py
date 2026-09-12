@@ -189,7 +189,6 @@ def safe_page(
         yield page
     finally:
         page.wait_for_timeout(0)
-        page.close()
         context.close()
         problems = diagnostics.render()
         if problems:
