@@ -1,14 +1,55 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
 from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
-from playwright.sync_api import Page, expect
 
 from matoca_service.service import PartyPreferences, QueueSubmission
 
 from .conftest import is_allowed_loopback_url
 from .fake_service import BrowserFakeService
 
+if TYPE_CHECKING:
+    from playwright.sync_api import Page
+
 pytestmark = pytest.mark.browser
+PROBE_PATH = Path(__file__).with_name("diagnostics_probe.py")
+
+
+def run_diagnostics_probe(
+    test_name: str,
+    *,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    probe_environment = os.environ.copy()
+    if environment is not None:
+        probe_environment.update(environment)
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(PROBE_PATH),
+            "-m",
+            "browser",
+            "-k",
+            test_name,
+            "-q",
+            "-p",
+            "no:cacheprovider",
+        ],
+        cwd=PROBE_PATH.parents[2],
+        env=probe_environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
 
 
 @pytest.mark.asyncio
@@ -134,8 +175,44 @@ def test_isolated_home_loads_without_external_requests(
     browser_base_url: str,
     assert_clean_browser: Callable[[], None],
 ) -> None:
+    from playwright.sync_api import expect
+
     response = safe_page.goto(browser_base_url, wait_until="networkidle")
 
     assert response is not None and response.status == 200
     expect(safe_page.get_by_role("heading", name="利用する加盟店を選ぶ")).to_be_visible()
     assert_clean_browser()
+
+
+def test_console_error_without_helper_fails_automatically() -> None:
+    result = run_diagnostics_probe("test_automatic_console_error_probe")
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "automatic teardown probe" in output
+    assert "ERROR at teardown" in output
+
+
+def test_call_failure_reports_diagnostics_without_second_teardown_error() -> None:
+    result = run_diagnostics_probe("test_call_failure_console_error_probe")
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "intentional call failure" in output
+    assert "browser diagnostics" in output
+    assert "call failure diagnostic" in output
+    assert "ERROR at teardown" not in output
+
+
+def test_safe_page_closes_before_loopback_server(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "server-status.txt"
+
+    result = run_diagnostics_probe(
+        "test_page_close_order_probe",
+        environment={"MATOCA_CLOSE_PROBE": str(marker)},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert marker.read_text(encoding="utf-8") == "200"

@@ -37,6 +37,9 @@ browser = [
     "pytest-playwright>=0.7,<1",
 ]
 
+[tool.uv]
+default-groups = ["dev"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/matoca_service"]
 artifacts = [

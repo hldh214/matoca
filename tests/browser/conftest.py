@@ -5,19 +5,23 @@ import threading
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from time import monotonic
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 import pytest
 import uvicorn
-from playwright.sync_api import ConsoleMessage, Error, Page, Request, Route
 
 from matoca_service.web.app import create_app
 
 from .fake_service import BrowserFakeService
 
+if TYPE_CHECKING:
+    from playwright.sync_api import BrowserContext, ConsoleMessage, Error, Page, Request, Route
+    from pytest_playwright.pytest_playwright import CreateContextCallback
+
 DEFAULT_VIEWPORT = (1440, 900)
 SERVER_TIMEOUT_SECONDS = 10.0
+CALL_REPORT = pytest.StashKey[pytest.TestReport]()
 
 
 def is_allowed_loopback_url(url: str, allowed_origin: str) -> bool:
@@ -55,7 +59,7 @@ class BrowserDiagnostics:
     request_failures: list[str] = field(default_factory=list)
     external_requests: list[str] = field(default_factory=list)
 
-    def assert_clean(self) -> None:
+    def render(self) -> str:
         problems: list[str] = []
         if self.page_errors:
             problems.append(f"page errors: {self.page_errors!r}")
@@ -65,7 +69,23 @@ class BrowserDiagnostics:
             problems.append(f"failed requests: {self.request_failures!r}")
         if self.external_requests:
             problems.append(f"external requests: {self.external_requests!r}")
-        assert not problems, "Unexpected browser diagnostics:\n" + "\n".join(problems)
+        return "\n".join(problems)
+
+    def assert_clean(self) -> None:
+        problems = self.render()
+        assert not problems, "Unexpected browser diagnostics:\n" + problems
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(
+    item: pytest.Item,
+    call: pytest.CallInfo[None],
+) -> Generator[None, Any]:
+    del call
+    outcome = yield
+    report = outcome.get_result()
+    if report.when == "call":
+        item.stash[CALL_REPORT] = report
 
 
 @pytest.fixture
@@ -126,19 +146,20 @@ def browser_context_args(
 
 
 @pytest.fixture
-def _browser_diagnostics() -> Generator[BrowserDiagnostics]:
-    diagnostics = BrowserDiagnostics()
-    yield diagnostics
-    diagnostics.assert_clean()
+def _browser_diagnostics() -> BrowserDiagnostics:
+    return BrowserDiagnostics()
 
 
 @pytest.fixture
 def safe_page(
-    page: Page,
+    new_context: CreateContextCallback,
     browser_base_url: str,
     _browser_diagnostics: BrowserDiagnostics,
-) -> Page:
+    request: pytest.FixtureRequest,
+) -> Generator[Page]:
     diagnostics = _browser_diagnostics
+    context: BrowserContext = new_context()
+    page = context.new_page()
 
     def record_page_error(error: Error) -> None:
         diagnostics.page_errors.append(str(error))
@@ -161,7 +182,19 @@ def safe_page(
     page.on("console", record_console_error)
     page.on("requestfailed", record_request_failure)
     page.route("**/*", guard)
-    return page
+    try:
+        yield page
+    finally:
+        page.wait_for_timeout(0)
+        page.close()
+        context.close()
+        problems = diagnostics.render()
+        if problems:
+            call_report = request.node.stash.get(CALL_REPORT, None)
+            if call_report is not None and call_report.failed:
+                call_report.sections.append(("browser diagnostics", problems))
+            else:
+                diagnostics.assert_clean()
 
 
 @pytest.fixture
