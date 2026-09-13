@@ -167,7 +167,7 @@ def test_console_geometry_across_supported_viewports(
     assert_no_overlap(box(queue_band), box(toolbar))
     assert_no_overlap(box(toolbar), box(first_row))
     assert_no_overlap(box(counts), box(first_row))
-    first_action = first_row.get_by_role("button")
+    first_action = first_row.locator(".join-button")
     for content in first_row.locator(":scope > :not(.join-button)").all():
         assert_no_overlap(box(content), box(first_action))
 

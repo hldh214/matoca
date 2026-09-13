@@ -4,10 +4,12 @@ export function officialEstimate(minutes, isMore = false) {
 }
 
 export class ShopList {
-  constructor(document, onJoin) {
+  constructor(document, onJoin, onFavorite, onHistory) {
     this.document = document;
     this.target = document.querySelector("#shop-list");
     this.onJoin = onJoin;
+    this.onFavorite = onFavorite;
+    this.onHistory = onHistory;
   }
 
   node(tag, className, text) {
@@ -17,14 +19,25 @@ export class ShopList {
     return element;
   }
 
-  render(data, filter, query, queueKnown, hasQueue) {
+  render(data, filter, query, sort, favorites, queueKnown, hasQueue) {
     if (!data) return;
     this.document.querySelector("#available-count").textContent = data.available_count;
     this.document.querySelector("#total-count").textContent = data.total_count;
     const search = query.trim().toLocaleLowerCase("ja-JP");
+    const value = (shop) => sort === "waiting" ? shop.current_waiting
+      : sort === "official" ? shop.official_waiting_minutes : null;
     const shops = data.shops.filter((shop) =>
       (filter === "all" || shop.can_join === true)
-      && [shop.name, shop.sub_name, shop.address].join(" ").toLocaleLowerCase("ja-JP").includes(search));
+      && [shop.name, shop.sub_name, shop.address].join(" ").toLocaleLowerCase("ja-JP").includes(search))
+      .sort((left, right) => {
+        const favoriteOrder = Number(favorites.has(right.id)) - Number(favorites.has(left.id));
+        if (favoriteOrder) return favoriteOrder;
+        const a = value(left), b = value(right);
+        if (a === null && b !== null) return 1;
+        if (a !== null && b === null) return -1;
+        if (a !== null && b !== null && a !== b) return a - b;
+        return (left.sub_name || left.name).localeCompare(right.sub_name || right.name, "ja-JP");
+      });
     this.target.replaceChildren();
     if (!shops.length) {
       this.target.append(this.node("p", "empty-state", filter === "available" && !search
@@ -59,7 +72,16 @@ export class ShopList {
       action.addEventListener("click", () => {
         if (!action.disabled) return this.onJoin(shop);
       });
-      row.append(identity, status, waiting, estimate, action);
+      const tools = this.node("div", "shop-tools");
+      const favorite = this.node("button", "favorite-button", favorites.has(shop.id) ? "★" : "☆");
+      favorite.type = "button";
+      favorite.setAttribute("aria-label", favorites.has(shop.id) ? "お気に入りから削除" : "お気に入りに追加");
+      favorite.addEventListener("click", () => this.onFavorite(shop));
+      const history = this.node("button", "history-button", "履歴を見る");
+      history.type = "button";
+      history.addEventListener("click", () => this.onHistory(shop));
+      tools.append(favorite, history);
+      row.append(identity, status, waiting, estimate, tools, action);
       this.target.append(row);
     }
   }

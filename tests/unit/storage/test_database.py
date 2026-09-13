@@ -20,7 +20,7 @@ def test_initialize_creates_private_database_and_schema(tmp_path: Path) -> None:
     assert stat.S_IMODE(database.path.stat().st_mode) == 0o600
     assert (
         database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 5
+        == 6
     )
 
 
@@ -83,7 +83,7 @@ def test_business_migration_rolls_back_schema_and_version_after_ddl_failure(tmp_
         connection.set_authorizer(None)
         migrate(connection)
 
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'shops'"
         ).fetchone() == ("shops",)
@@ -157,7 +157,7 @@ def test_initialize_upgrades_exact_pre_fix_version_two_database(tmp_path: Path) 
 
     assert (
         database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 5
+        == 6
     )
     column = database.read(
         lambda connection: connection.execute(
@@ -187,7 +187,7 @@ def test_initialize_upgrades_exact_version_three_database(tmp_path: Path) -> Non
 
     assert (
         database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 5
+        == 6
     )
     assert database.read(
         lambda connection: connection.execute(
@@ -218,7 +218,7 @@ def test_additive_catalog_upgrade_preserves_legacy_data(tmp_path: Path, version:
     database.initialize()
     assert (
         database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 5
+        == 6
     )
     assert database.read(
         lambda connection: connection.execute(

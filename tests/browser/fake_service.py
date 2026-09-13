@@ -1,5 +1,11 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
+from matoca_service.analytics.models import (
+    FavoriteState,
+    HistoryObservation,
+    ShopHistory,
+    ShopIdentity,
+)
 from matoca_service.console import MerchantConsoleData, MerchantSummary, ShopConsoleItem
 from matoca_service.matoca.models import Shop, ShopForms, Waiting
 from matoca_service.service import (
@@ -20,6 +26,7 @@ class BrowserFakeService:
         self.refresh_calls = 0
         self.console_reads = 0
         self.waiting_reads = 0
+        self.favorite_ids: set[int] = set()
         self._waiting: dict[str, list[Waiting]] = {
             "sawayaka": [],
             "la_ohana_yokohamahonmoku": [],
@@ -93,6 +100,7 @@ class BrowserFakeService:
                 stale=True,
             ),
         ]
+        self._console_shops[1].official_waiting_minutes = 40
         # Live detail is deliberately stricter than cached list limits and the
         # global settings range (0..20), so the workflow must use the detail API.
         self._console_shops[0].forms = ShopForms(min_adult=1, max_adult=6, min_child=0, max_child=4)
@@ -244,3 +252,44 @@ class BrowserFakeService:
         self._waiting[merchant_key] = [
             waiting for waiting in self._waiting[merchant_key] if waiting.id != waiting_id
         ]
+
+    async def favorites(self) -> dict[str, list[int]]:
+        return {"sawayaka": sorted(self.favorite_ids)} if self.favorite_ids else {}
+
+    async def set_favorite(self, merchant_key: str, shop_id: int, enabled: bool) -> FavoriteState:
+        self._merchant(merchant_key)
+        if enabled:
+            self.favorite_ids.add(shop_id)
+        else:
+            self.favorite_ids.discard(shop_id)
+        return FavoriteState(merchant_key=merchant_key, shop_id=shop_id, enabled=enabled)
+
+    async def shop_history(self, merchant_key: str, shop_id: int, day: date) -> ShopHistory:
+        self._merchant(merchant_key)
+        shop = next(item for item in self._console_shops if item.id == shop_id)
+        observations = (
+            []
+            if day != date(2026, 9, 10)
+            else [
+                HistoryObservation(
+                    observed_at=datetime(2026, 9, 10, 1, minute, tzinfo=UTC),
+                    current_waiting=waiting,
+                    official_waiting_minutes=minutes,
+                    official_waiting_is_more=False,
+                    error_code=error,
+                )
+                for minute, waiting, minutes, error in [
+                    (0, 2, 10, None),
+                    (5, 4, 20, None),
+                    (10, 5, None, "timeout"),
+                    (15, 8, 35, None),
+                ]
+            ]
+        )
+        return ShopHistory(
+            day=day,
+            shop=ShopIdentity(
+                id=shop.id, name=shop.name, sub_name=shop.sub_name, address=shop.address
+            ),
+            observations=observations,
+        )

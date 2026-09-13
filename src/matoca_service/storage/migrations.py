@@ -160,12 +160,23 @@ def _create_catalog_state(connection: sqlite3.Connection) -> None:
     """)
 
 
+def _create_shop_favorites(connection: sqlite3.Connection) -> None:
+    connection.execute("""
+        CREATE TABLE shop_favorites (
+            merchant_key TEXT NOT NULL,
+            shop_id INTEGER NOT NULL,
+            PRIMARY KEY (merchant_key, shop_id)
+        )
+    """)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _bootstrap_metadata,
     _create_business_storage,
     _add_poll_failure_count,
     _create_observation_rollups,
     _create_catalog_state,
+    _create_shop_favorites,
 )
 
 

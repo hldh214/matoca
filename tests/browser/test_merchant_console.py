@@ -72,6 +72,45 @@ def test_selects_merchant_and_filters_shops(
     assert_clean_browser()
 
 
+def test_sorts_favorites_and_opens_shop_history(
+    safe_page: Page,
+    browser_base_url: str,
+    browser_service: BrowserFakeService,
+    assert_clean_browser: Callable[[], None],
+) -> None:
+    from playwright.sync_api import expect
+
+    open_sawayaka_console(safe_page, browser_base_url)
+    safe_page.get_by_role("button", name="すべて").click()
+    safe_page.get_by_label("並び順").select_option("official")
+    rows = safe_page.locator(".shop-row")
+    expect(rows.nth(0)).to_contain_text("浜松テスト店")
+    expect(rows.nth(1)).to_contain_text("休業テスト店")
+    expect(rows.nth(2).locator(".metric").nth(1)).to_have_text("—")
+
+    favorite = safe_page.locator('.shop-row[data-id="3274"]').get_by_role(
+        "button", name="お気に入りに追加"
+    )
+    favorite.click()
+    expect(rows.nth(0)).to_contain_text("受付停止テスト店")
+    assert browser_service.favorite_ids == {3274}
+
+    safe_page.reload()
+    safe_page.get_by_role("button", name="すべて").click()
+    expect(safe_page.locator(".shop-row").nth(0)).to_contain_text("受付停止テスト店")
+    safe_page.locator('.shop-row[data-id="3274"]').get_by_role("button", name="履歴を見る").click()
+    dialog = safe_page.get_by_role("dialog", name="受付停止テスト店の履歴")
+    expect(dialog).to_be_visible()
+    expect(dialog.get_by_label("日付")).to_have_value("2026-09-10")
+    expect(dialog.get_by_text("待ち組数（組）", exact=True)).to_be_visible()  # noqa: RUF001
+    expect(dialog.get_by_text("公式待ち時間（分）", exact=True)).to_be_visible()  # noqa: RUF001
+    expect(dialog.locator("svg")).to_have_count(2)
+    expect(dialog.locator("path.history-line")).to_have_count(4)
+    dialog.get_by_label("日付").fill("2026-09-09")
+    expect(dialog.get_by_text("この日の記録はありません")).to_be_visible()
+    assert_clean_browser()
+
+
 def test_saved_settings_apply_to_the_next_join_dialog(
     safe_page: Page,
     browser_base_url: str,

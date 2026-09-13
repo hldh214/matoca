@@ -52,4 +52,7 @@ export class MatocaApi {
   preferences() { return this.request("/api/preferences"); }
   savePreferences(body) { return this.request("/api/preferences", "PUT", body); }
   refresh() { return this.request(`${this.base}/refresh`, "POST"); }
+  favorites() { return this.request("/api/favorites"); }
+  setFavorite(id, enabled) { return this.request(`${this.base}/shops/${encodeURIComponent(id)}/favorite`, "PUT", {enabled}); }
+  shopHistory(id, day) { return this.request(`${this.base}/shops/${encodeURIComponent(id)}/history?day=${encodeURIComponent(day)}`); }
 }

@@ -3,21 +3,40 @@ import {ShopList} from "./shop-list.js";
 import {QueueStatus} from "./queue-status.js";
 import {JoinForm} from "./join-form.js";
 import {PreferencesDialog} from "./preferences.js";
+import {ShopHistoryDialog} from "./shop-history.js";
 
 const api = new MatocaApi(document.body.dataset.merchantKey);
 const preferences = new PreferencesDialog(document, api);
 const queue = new QueueStatus(document, api, render, reload);
 const join = new JoinForm(document, api, preferences, queue, reload);
-const list = new ShopList(document, (shop) => join.open(shop));
+const history = new ShopHistoryDialog(document, api);
+const favorites = new Set();
+const list = new ShopList(document, (shop) => join.open(shop), toggleFavorite,
+  (shop) => history.open(shop, new Date(data.updated_at).toLocaleDateString("sv-SE",
+    {timeZone: "Asia/Tokyo"})));
 const search = document.querySelector("#shop-search");
+const sort = document.querySelector("#shop-sort");
 const updated = document.querySelector("#updated-at");
 let data = null;
 let filter = "available";
 let consoleRevision = 0;
 
 function render() {
-  list.render(data, filter, search.value, queue.known && !queue.busy, queue.hasQueue);
+  list.render(data, filter, search.value, sort.value, favorites,
+    queue.known && !queue.busy, queue.hasQueue);
   join.sync();
+}
+async function toggleFavorite(shop) {
+  const enabled = !favorites.has(shop.id);
+  enabled ? favorites.add(shop.id) : favorites.delete(shop.id);
+  render();
+  try { await api.setFavorite(shop.id, enabled); }
+  catch { enabled ? favorites.delete(shop.id) : favorites.add(shop.id); render(); }
+}
+async function loadFavorites() {
+  const stored = await api.favorites();
+  favorites.clear();
+  for (const id of stored[document.body.dataset.merchantKey] || []) favorites.add(id);
 }
 
 async function loadConsole() {
@@ -55,6 +74,7 @@ document.querySelectorAll("[data-filter]").forEach((button) => {
   button.setAttribute("aria-pressed", String(button.dataset.filter === filter));
 });
 search.addEventListener("input", render);
+sort.addEventListener("change", render);
 document.querySelector("#refresh-button").addEventListener("click", async (event) => {
   const button = event.currentTarget;
   if (button.disabled) return;
@@ -72,4 +92,4 @@ document.querySelector("#refresh-button").addEventListener("click", async (event
 });
 setInterval(() => { if (!document.hidden) return reload(); }, 30000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) return reload(); });
-reload();
+loadFavorites().then(reload, reload);

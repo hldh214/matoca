@@ -1,8 +1,9 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import date
 from json import JSONDecodeError
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 from urllib.parse import urlsplit
 
 import uvicorn
@@ -13,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
+from matoca_service.analytics.models import FavoriteState, FavoriteUpdate, ShopHistory
 from matoca_service.config import RuntimeSettings
 from matoca_service.console import MerchantConsoleData
 from matoca_service.matoca.models import Shop, Waiting
@@ -90,10 +92,19 @@ class CollectionLifecycle(Protocol):
     async def stop(self) -> None: ...
 
 
+class AnalyticsService(Protocol):
+    async def shop_history(self, merchant_key: str, shop_id: int, day: date) -> ShopHistory: ...
+    async def favorites(self) -> dict[str, list[int]]: ...
+    async def set_favorite(
+        self, merchant_key: str, shop_id: int, enabled: bool
+    ) -> FavoriteState: ...
+
+
 def create_app(
     service: DashboardService | None = None,
     *,
     collection_coordinator: CollectionLifecycle | None = None,
+    analytics_service: AnalyticsService | None = None,
 ) -> FastAPI:
     dashboard_service: DashboardService
     coordinator: CollectionLifecycle | None
@@ -108,6 +119,7 @@ def create_app(
     else:
         dashboard_service = service
         coordinator = collection_coordinator
+    analytics = analytics_service or cast(AnalyticsService, dashboard_service)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -197,6 +209,30 @@ def create_app(
     @app.get("/api/merchants", response_model=list[MerchantSummary])
     async def merchants_api() -> list[MerchantSummary]:
         return dashboard_service.list_merchants()
+
+    @app.get("/api/favorites", response_model=dict[str, list[int]])
+    async def favorites_api() -> dict[str, list[int]]:
+        return await analytics.favorites()
+
+    @app.get("/api/merchants/{merchant_key}/shops/{shop_id}/history", response_model=ShopHistory)
+    async def shop_history_api(
+        merchant_key: str, day: date, shop_id: int = PathParameter(ge=1)
+    ) -> ShopHistory:
+        try:
+            return await analytics.shop_history(merchant_key, shop_id, day)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail="店舗が見つかりません") from error
+
+    @app.put("/api/merchants/{merchant_key}/shops/{shop_id}/favorite", response_model=FavoriteState)
+    async def favorite_api(
+        request: Request, merchant_key: str, shop_id: int = PathParameter(ge=1)
+    ) -> FavoriteState | JSONResponse:
+        require_same_origin(request)
+        try:
+            update = FavoriteUpdate.model_validate(await request.json())
+        except JSONDecodeError, UnicodeDecodeError, ValidationError:
+            return JSONResponse(status_code=422, content={"detail": "入力内容が正しくありません"})
+        return await analytics.set_favorite(merchant_key, shop_id, update.enabled)
 
     @app.get("/api/merchants/{merchant_key}/console", response_model=MerchantConsoleData)
     async def merchant_console_api(merchant_key: str, request: Request) -> MerchantConsoleData:

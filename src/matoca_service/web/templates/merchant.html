@@ -32,16 +32,25 @@
             <button type="button" data-filter="all">すべて</button>
           </div>
           <label class="search-field"><span>店舗を検索</span><input id="shop-search" type="search" placeholder="店舗名で検索"></label>
+          <label class="sort-field"><span>並び順</span><select id="shop-sort" aria-label="並び順"><option value="official">公式目安が短い順</option><option value="waiting">待ち組数が少ない順</option><option value="name">店舗名順</option></select></label>
         </div>
         <div class="count-summary" aria-label="店舗数">
           <span>受付可能 <output id="available-count">—</output> 店</span>
           <span>全店舗 <output id="total-count">—</output> 店</span>
         </div>
-        <div class="list-header" aria-hidden="true"><span>店舗</span><span>受付状況</span><span>待ち組数</span><span>公式目安</span><span></span></div>
+        <div class="list-header" aria-hidden="true"><span>店舗</span><span>受付状況</span><span>待ち組数</span><span>公式目安</span><span>店舗操作</span><span></span></div>
         <div id="shop-list" class="shop-list"><p class="loading-state">最新情報を取得しています</p></div>
         <p id="updated-at" class="updated-at"></p>
       </section>
     </main>
+    <dialog id="history-dialog" class="queue-dialog history-dialog" aria-labelledby="history-title">
+      <div class="history-content">
+        <button class="dialog-close" type="button" aria-label="閉じる">×</button>
+        <h2 id="history-title">店舗の履歴</h2>
+        <label class="history-date"><span>日付</span><input id="history-day" type="date"></label>
+        <div id="history-body" aria-live="polite"></div>
+      </div>
+    </dialog>
     <dialog id="settings-dialog" class="queue-dialog settings-dialog" aria-labelledby="settings-title">
       <form method="dialog" id="settings-form">
         <button class="dialog-close" type="button" aria-label="閉じる">×</button>

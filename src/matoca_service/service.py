@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TypeVar
 
@@ -8,6 +8,8 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_core import PydanticCustomError
 
+from matoca_service.analytics.models import FavoriteState, ShopHistory
+from matoca_service.analytics.repository import AnalyticsRepository
 from matoca_service.collection.coordinator import CollectionCoordinator
 from matoca_service.collection.models import CollectedShop, CollectionCycle, CollectionRateLimited
 from matoca_service.collection.schedule import PollSchedule
@@ -217,6 +219,7 @@ class MatocaService:
         self._database.initialize()
         self._shops = ShopRepository(self._database)
         self._preferences = PreferenceRepository(self._database)
+        self._analytics = AnalyticsRepository(self._database)
         self._collector = CollectionService(self, self._shops)
         self._poll_schedule = PollSchedule(self._shops)
         self._collection_coordinator = CollectionCoordinator(
@@ -300,6 +303,18 @@ class MatocaService:
             ),
         )
         return await run_storage(self._stored_console, merchant, merchant_key, now)
+
+    async def shop_history(self, merchant_key: str, shop_id: int, day: date) -> ShopHistory:
+        self._merchant(merchant_key)
+        return await run_storage(self._analytics.shop_history, merchant_key, shop_id, day)
+
+    async def favorites(self) -> dict[str, list[int]]:
+        return await run_storage(self._analytics.favorites)
+
+    async def set_favorite(self, merchant_key: str, shop_id: int, enabled: bool) -> FavoriteState:
+        self._merchant(merchant_key)
+        await run_storage(self._analytics.set_favorite, merchant_key, shop_id, enabled)
+        return FavoriteState(merchant_key=merchant_key, shop_id=shop_id, enabled=enabled)
 
     def _stored_console(
         self,
