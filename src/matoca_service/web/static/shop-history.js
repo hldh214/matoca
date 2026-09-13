@@ -4,7 +4,7 @@ function element(document, name, text) {
   if (text !== undefined) node.textContent = text;
   return node;
 }
-function plot(document, observations, field, label) {
+function plot(document, observations, field, label, day, displayZone) {
   const section = element(document, "section");
   const heading = element(document, "h3", label);
   const svg = document.createElementNS(SVG_NS, "svg");
@@ -13,8 +13,7 @@ function plot(document, observations, field, label) {
   svg.setAttribute("aria-label", label);
   const valid = observations.filter((item) => item.error_code === null && item[field] !== null);
   const maximum = Math.max(1, ...valid.map((item) => item[field]));
-  const dayStart = new Date(observations[0].observed_at);
-  dayStart.setHours(0, 0, 0, 0);
+  const dayStart = new Date(`${day}T00:00:00+09:00`);
   let segment = [];
   let previousTime = null;
   const flush = () => {
@@ -38,6 +37,13 @@ function plot(document, observations, field, label) {
     const x = 42 + (itemTime - dayStart) * 570 / (24 * 60 * 60 * 1000);
     const y = 145 - item[field] * 115 / maximum;
     segment.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+    if (field === "official_waiting_minutes" && item.official_waiting_is_more) {
+      const marker = document.createElementNS(SVG_NS, "circle");
+      marker.setAttribute("cx", x.toFixed(1)); marker.setAttribute("cy", y.toFixed(1));
+      marker.setAttribute("r", "7"); marker.setAttribute("class", "history-lower-bound");
+      const title = document.createElementNS(SVG_NS, "title");
+      title.textContent = `${item[field]}分以上`; marker.append(title); svg.append(marker);
+    }
     previousTime = itemTime;
   });
   flush();
@@ -49,7 +55,7 @@ function plot(document, observations, field, label) {
   const ticks = element(document, "p", observations.filter((_, index) =>
     index % Math.max(1, Math.ceil(observations.length / 4)) === 0)
     .map((item) => new Date(item.observed_at).toLocaleTimeString("ja-JP",
-      {hour: "2-digit", minute: "2-digit"})).join("　"));
+      {hour: "2-digit", minute: "2-digit", timeZone: displayZone})).join("　"));
   ticks.className = "history-ticks";
   section.append(heading, svg, ticks);
   return section;
@@ -62,6 +68,8 @@ export class ShopHistoryDialog {
     this.day = document.querySelector("#history-day");
     this.body = document.querySelector("#history-body");
     this.revision = 0;
+    try { this.displayZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Tokyo"; }
+    catch { this.displayZone = "Asia/Tokyo"; }
     this.day.addEventListener("change", () => this.load());
   }
   open(shop, day) {
@@ -77,10 +85,6 @@ export class ShopHistoryDialog {
     try {
       const data = await this.api.shopHistory(this.shop.id, this.day.value);
       if (revision !== this.revision) return;
-      if (!data.observations.length) {
-        this.body.replaceChildren(element(this.document, "p", "この日の記録はありません"));
-        return;
-      }
       const identity = element(this.document, "div");
       identity.className = "history-identity";
       if (data.shop.address) identity.append(element(this.document, "p", data.shop.address));
@@ -93,9 +97,18 @@ export class ShopHistoryDialog {
         map.href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${data.shop.lat},${data.shop.lng}`)}`;
         map.target = "_blank"; map.rel = "noopener noreferrer"; identity.append(map);
       }
+      identity.append(element(this.document, "span", `表示時刻: ${this.displayZone}`));
+      if (!data.observations.length) {
+        this.body.replaceChildren(identity, element(this.document, "p", "この日の記録はありません"));
+        return;
+      }
       this.body.replaceChildren(identity,
-        plot(this.document, data.observations, "current_waiting", "待ち組数（組）"),
-        plot(this.document, data.observations, "official_waiting_minutes", "公式待ち時間（分）"));
+        plot(this.document, data.observations, "current_waiting", "待ち組数（組）",
+          data.day, this.displayZone),
+        plot(this.document, data.observations, "official_waiting_minutes", "公式待ち時間（分）",
+          data.day, this.displayZone),
+        ...(data.observations.some((item) => item.official_waiting_is_more)
+          ? [element(this.document, "p", "以上を示す点があります")] : []));
     } catch (error) {
       if (revision !== this.revision) return;
       this.body.replaceChildren(element(this.document, "p", error.detail || "履歴を取得できませんでした"));

@@ -111,6 +111,49 @@ def test_sorts_favorites_and_opens_shop_history(
     assert_clean_browser()
 
 
+@pytest.mark.parametrize("timezone_id", ["America/Los_Angeles"])
+def test_history_uses_tokyo_day_axis_and_client_timezone_labels(
+    safe_page: Page,
+    browser_base_url: str,
+    timezone_id: str,
+    assert_clean_browser: Callable[[], None],
+) -> None:
+    from playwright.sync_api import expect
+
+    del timezone_id
+    open_sawayaka_console(safe_page, browser_base_url)
+    safe_page.locator('.shop-row[data-id="3272"] .history-button').click()
+    dialog = safe_page.get_by_role("dialog", name="浜松テスト店の履歴")
+    expect(dialog.get_by_text("表示時刻: America/Los_Angeles")).to_be_visible()
+    first_path = dialog.locator("path.history-line").first.get_attribute("d")
+    assert first_path is not None and first_path.startswith("M279.")
+    expect(dialog.locator(".history-lower-bound")).to_have_count(1)
+    expect(dialog.get_by_text("以上を示す点があります")).to_be_visible()
+
+    dialog.get_by_label("日付").fill("2026-09-09")
+    expect(dialog.get_by_text("静岡県浜松市テスト町1-1")).to_be_visible()
+    expect(dialog.get_by_text("この日の記録はありません")).to_be_visible()
+    assert_clean_browser()
+
+
+def test_favorite_button_waits_for_persistence_before_another_toggle(
+    safe_page: Page,
+    browser_base_url: str,
+    browser_service: BrowserFakeService,
+) -> None:
+    from playwright.sync_api import expect
+
+    browser_service.favorite_delay_seconds = 0.3
+    open_sawayaka_console(safe_page, browser_base_url)
+    button = safe_page.locator('.shop-row[data-id="3272"]').get_by_label("お気に入りに追加")
+    button.click()
+    pending = safe_page.locator('.shop-row[data-id="3272"]').get_by_label("お気に入りから削除")
+    expect(pending).to_be_disabled()
+    pending.dispatch_event("click")
+    expect(pending).to_be_enabled(timeout=2_000)
+    assert browser_service.favorite_writes == [(3272, True)]
+
+
 def test_saved_settings_apply_to_the_next_join_dialog(
     safe_page: Page,
     browser_base_url: str,

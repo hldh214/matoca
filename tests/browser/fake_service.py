@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, date, datetime
 
 from matoca_service.analytics.models import (
@@ -27,6 +28,8 @@ class BrowserFakeService:
         self.console_reads = 0
         self.waiting_reads = 0
         self.favorite_ids: set[int] = set()
+        self.favorite_delay_seconds = 0.0
+        self.favorite_writes: list[tuple[int, bool]] = []
         self._waiting: dict[str, list[Waiting]] = {
             "sawayaka": [],
             "la_ohana_yokohamahonmoku": [],
@@ -258,6 +261,8 @@ class BrowserFakeService:
 
     async def set_favorite(self, merchant_key: str, shop_id: int, enabled: bool) -> FavoriteState:
         self._merchant(merchant_key)
+        self.favorite_writes.append((shop_id, enabled))
+        await asyncio.sleep(self.favorite_delay_seconds)
         if enabled:
             self.favorite_ids.add(shop_id)
         else:
@@ -286,6 +291,8 @@ class BrowserFakeService:
                 ]
             ]
         )
+        if observations:
+            observations[-1].official_waiting_is_more = True
         return ShopHistory(
             day=day,
             shop=ShopIdentity(

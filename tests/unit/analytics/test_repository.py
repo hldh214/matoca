@@ -91,6 +91,8 @@ def test_history_for_known_shop_with_no_samples_is_empty(database: Database) -> 
 
 
 def test_favorites_persist_and_are_isolated_by_merchant(database: Database) -> None:
+    for merchant, shop_id in (("one", 7), ("two", 8), ("one", 9)):
+        save(database, merchant, shop_id, datetime(2026, 9, 10, 1, tzinfo=UTC))
     repository = AnalyticsRepository(database)
     repository.set_favorite("one", 7, True)
     repository.set_favorite("two", 8, True)
@@ -99,3 +101,12 @@ def test_favorites_persist_and_are_isolated_by_merchant(database: Database) -> N
 
     reopened = AnalyticsRepository(Database(database.path))
     assert reopened.favorites() == {"one": [7], "two": [8]}
+
+
+def test_enabling_favorite_rejects_unknown_or_cross_merchant_shop(database: Database) -> None:
+    save(database, "one", 7, datetime(2026, 9, 10, 1, tzinfo=UTC))
+
+    with pytest.raises(LookupError):
+        AnalyticsRepository(database).set_favorite("two", 7, True)
+
+    assert AnalyticsRepository(database).favorites() == {}

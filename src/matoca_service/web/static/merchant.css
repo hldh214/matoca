@@ -87,6 +87,7 @@
 .history-dialog svg { width: 100%; height: auto; border: 1px solid #e1e3de; background: #fafbf9; }
 .history-line { fill: none; stroke: #287449; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
 .history-point { fill: #287449; }
+.history-lower-bound { fill: #fff; stroke: #a9302c; stroke-width: 3; }
 .history-axis-label { fill: #666a64; font-size: 11px; }
 .history-identity { display: flex; flex-wrap: wrap; gap: 8px 18px; color: #565a54; font-size: 12px; }
 .history-identity p { width: 100%; margin: 0; }

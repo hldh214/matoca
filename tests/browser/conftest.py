@@ -153,6 +153,8 @@ def browser_context_args(
     callspec = getattr(request.node, "callspec", None)
     if callspec is not None and "viewport" in callspec.params:
         viewport = callspec.params["viewport"]
+    if callspec is not None and "timezone_id" in callspec.params:
+        args["timezone_id"] = callspec.params["timezone_id"]
     args["viewport"] = {"width": viewport[0], "height": viewport[1]}
     args["service_workers"] = "block"
     return args

@@ -17,6 +17,8 @@ class AnalyticsFake:
         return {"sawayaka": [3272]}
 
     async def set_favorite(self, merchant_key: str, shop_id: int, enabled: bool) -> FavoriteState:
+        if shop_id == 9999:
+            raise LookupError(shop_id)
         return FavoriteState(merchant_key=merchant_key, shop_id=shop_id, enabled=enabled)
 
 
@@ -67,3 +69,18 @@ async def test_favorite_mutation_requires_same_origin_and_boolean() -> None:
     assert invalid.status_code == 422
     assert invalid.json() == {"detail": "入力内容が正しくありません"}
     assert success.json() == {"merchant_key": "sawayaka", "shop_id": 3272, "enabled": True}
+
+
+@pytest.mark.asyncio
+async def test_favorite_mutation_returns_safe_japanese_not_found() -> None:
+    app = create_app(object(), analytics_service=AnalyticsFake())  # type: ignore[arg-type]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.put(
+            "/api/merchants/sawayaka/shops/9999/favorite",
+            json={"enabled": True},
+            headers={"Origin": "http://test"},
+        )
+    assert response.status_code == 404
+    assert response.json() == {"detail": "店舗が見つかりません"}

@@ -11,6 +11,7 @@ const queue = new QueueStatus(document, api, render, reload);
 const join = new JoinForm(document, api, preferences, queue, reload);
 const history = new ShopHistoryDialog(document, api);
 const favorites = new Set();
+const pendingFavorites = new Set();
 const list = new ShopList(document, (shop) => join.open(shop), toggleFavorite,
   (shop) => history.open(shop, new Date(data.updated_at).toLocaleDateString("sv-SE",
     {timeZone: "Asia/Tokyo"})));
@@ -22,16 +23,19 @@ let filter = "available";
 let consoleRevision = 0;
 
 function render() {
-  list.render(data, filter, search.value, sort.value, favorites,
+  list.render(data, filter, search.value, sort.value, favorites, pendingFavorites,
     queue.known && !queue.busy, queue.hasQueue);
   join.sync();
 }
 async function toggleFavorite(shop) {
+  if (pendingFavorites.has(shop.id)) return;
   const enabled = !favorites.has(shop.id);
+  pendingFavorites.add(shop.id);
   enabled ? favorites.add(shop.id) : favorites.delete(shop.id);
   render();
   try { await api.setFavorite(shop.id, enabled); }
-  catch { enabled ? favorites.delete(shop.id) : favorites.add(shop.id); render(); }
+  catch { enabled ? favorites.delete(shop.id) : favorites.add(shop.id); }
+  finally { pendingFavorites.delete(shop.id); render(); }
 }
 async function loadFavorites() {
   const stored = await api.favorites();

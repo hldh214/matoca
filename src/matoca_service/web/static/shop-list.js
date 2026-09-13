@@ -19,7 +19,7 @@ export class ShopList {
     return element;
   }
 
-  render(data, filter, query, sort, favorites, queueKnown, hasQueue) {
+  render(data, filter, query, sort, favorites, pendingFavorites, queueKnown, hasQueue) {
     if (!data) return;
     this.document.querySelector("#available-count").textContent = data.available_count;
     this.document.querySelector("#total-count").textContent = data.total_count;
@@ -75,6 +75,7 @@ export class ShopList {
       const tools = this.node("div", "shop-tools");
       const favorite = this.node("button", "favorite-button", favorites.has(shop.id) ? "★" : "☆");
       favorite.type = "button";
+      favorite.disabled = pendingFavorites.has(shop.id);
       favorite.setAttribute("aria-label", favorites.has(shop.id) ? "お気に入りから削除" : "お気に入りに追加");
       favorite.addEventListener("click", () => this.onFavorite(shop));
       const history = this.node("button", "history-button", "履歴を見る");

@@ -75,6 +75,12 @@ class AnalyticsRepository:
     def set_favorite(self, merchant_key: str, shop_id: int, enabled: bool) -> None:
         def update(connection: sqlite3.Connection) -> None:
             if enabled:
+                known = connection.execute(
+                    "SELECT 1 FROM shops WHERE merchant_key = ? AND shop_id = ?",
+                    (merchant_key, shop_id),
+                ).fetchone()
+                if known is None:
+                    raise LookupError(shop_id)
                 connection.execute(
                     "INSERT OR IGNORE INTO shop_favorites (merchant_key, shop_id) VALUES (?, ?)",
                     (merchant_key, shop_id),

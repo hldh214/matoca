@@ -232,7 +232,10 @@ def create_app(
             update = FavoriteUpdate.model_validate(await request.json())
         except JSONDecodeError, UnicodeDecodeError, ValidationError:
             return JSONResponse(status_code=422, content={"detail": "入力内容が正しくありません"})
-        return await analytics.set_favorite(merchant_key, shop_id, update.enabled)
+        try:
+            return await analytics.set_favorite(merchant_key, shop_id, update.enabled)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail="店舗が見つかりません") from error
 
     @app.get("/api/merchants/{merchant_key}/console", response_model=MerchantConsoleData)
     async def merchant_console_api(merchant_key: str, request: Request) -> MerchantConsoleData:
