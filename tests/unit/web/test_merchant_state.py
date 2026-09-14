@@ -23,6 +23,8 @@ import pytest
         "stale_preferences_cannot_overwrite_saved_defaults",
         "reopened_settings_ignore_the_previous_response",
         "malformed_confirmations_are_not_silently_ignored",
+        "unresolved_intent_blocks_join_after_reload",
+        "successful_stale_queue_response_shows_warning",
     ],
 )
 def test_merchant_console_behavior(case: str) -> None:

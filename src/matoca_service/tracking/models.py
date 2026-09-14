@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict
 
 QueueStatus = Literal["active", "called", "cancelled", "unknown"]
 QueueSource = Literal["manual", "automation", "adopted"]
+IntentStatus = Literal["pending", "unresolved"]
 
 
 class QueueIntent(BaseModel):
@@ -39,6 +40,24 @@ class QueueObservation(BaseModel):
 
     observed_at: datetime
     count: int | None
+
+
+class QueueIntentSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    intent_id: str
+    merchant_key: str
+    merchant_name: str | None = None
+    shop_id: int
+    shop_name: str | None = None
+    submitted_at: datetime
+    official_minutes_at_submission: int | None
+    official_is_more_at_submission: bool | None
+    adult_count: int
+    child_count: int
+    source: Literal["manual", "automation"]
+    status: IntentStatus
+    error_code: str | None = None
 
 
 class QueueSession(BaseModel):

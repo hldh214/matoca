@@ -31,7 +31,7 @@ from matoca_service.storage.database import Database
 from matoca_service.storage.models import UserPreferences
 from matoca_service.storage.repositories import PreferenceRepository, ShopRepository
 from matoca_service.tracking.coordinator import QueueTrackingCoordinator
-from matoca_service.tracking.models import QueueIntent, QueueSession
+from matoca_service.tracking.models import QueueIntent, QueueIntentSummary, QueueSession
 from matoca_service.tracking.repository import QueueRepository
 
 T = TypeVar("T")
@@ -429,20 +429,22 @@ class MatocaService:
             )
             return waiting
 
-    async def queues(self) -> list[QueueSession]:
+    async def queues(self) -> list[QueueSession | QueueIntentSummary]:
         sessions = await run_storage(self._queues.list_sessions)
+        intents = await run_storage(self._queues.list_unfinished_intents)
         merchants = {item.key: item.name for item in self.list_merchants()}
         shop_names: dict[tuple[str, int], str] = {}
-        for session in sessions:
-            if session.shop_id is None:
+        queue_items: list[QueueSession | QueueIntentSummary] = [*sessions, *intents]
+        for item in queue_items:
+            if item.shop_id is None:
                 continue
-            for stored in await run_storage(self._shops.latest, session.merchant_key):
-                if stored.shop.id == session.shop_id:
-                    shop_names[(session.merchant_key, session.shop_id)] = (
+            for stored in await run_storage(self._shops.latest, item.merchant_key):
+                if stored.shop.id == item.shop_id:
+                    shop_names[(item.merchant_key, item.shop_id)] = (
                         stored.shop.sub_name or stored.shop.name
                     )
                     break
-        return [
+        enriched_sessions = [
             session.model_copy(
                 update={
                     "merchant_name": merchants.get(session.merchant_key),
@@ -455,6 +457,16 @@ class MatocaService:
             )
             for session in sessions
         ]
+        enriched_intents = [
+            intent.model_copy(
+                update={
+                    "merchant_name": merchants.get(intent.merchant_key),
+                    "shop_name": shop_names.get((intent.merchant_key, intent.shop_id)),
+                }
+            )
+            for intent in intents
+        ]
+        return [*enriched_intents, *enriched_sessions]
 
     async def read_collection_cycle(self, merchant_key: str) -> CollectionCycle:
         async with self._operation_lock:

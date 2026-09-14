@@ -163,7 +163,17 @@ export class JoinForm {
     let succeeded = false;
     try {
       const item = await this.api.createWaiting(body);
-      this.queue.finishMutation([item]);
+      this.queue.finishMutation([{
+        ...item,
+        waiting_id: item.id,
+        shop_id: item.shop_id ?? this.selected.id,
+        status: "active",
+        source: "manual",
+        submitted_at: new Date().toISOString(),
+        official_minutes_at_submission: this.selected.waiting_time?.minutes ?? null,
+        official_is_more_at_submission: this.selected.waiting_time?.is_more ?? null,
+        observations: [{observed_at: new Date().toISOString(), count: item.count ?? null}],
+      }]);
       this.dialog.close();
       succeeded = true;
     } catch (error) {

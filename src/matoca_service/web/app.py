@@ -29,7 +29,7 @@ from matoca_service.service import (
     QueueUnavailableError,
     UnknownMerchantError,
 )
-from matoca_service.tracking.models import QueueSession
+from matoca_service.tracking.models import QueueIntentSummary, QueueSession
 from matoca_service.web.timezone import localize_datetime, parse_timezone
 
 WEB_ROOT = Path(__file__).parent
@@ -87,7 +87,7 @@ class DashboardService(Protocol):
 
     async def cancel_waiting(self, merchant_key: str, waiting_id: int) -> None: ...
 
-    async def queues(self) -> list[QueueSession]: ...
+    async def queues(self) -> list[QueueSession | QueueIntentSummary]: ...
 
 
 class CollectionLifecycle(Protocol):
@@ -232,8 +232,8 @@ def create_app(
     async def merchants_api() -> list[MerchantSummary]:
         return dashboard_service.list_merchants()
 
-    @app.get("/api/queues", response_model=list[QueueSession])
-    async def queues_api() -> list[QueueSession]:
+    @app.get("/api/queues", response_model=list[QueueSession | QueueIntentSummary])
+    async def queues_api() -> list[QueueSession | QueueIntentSummary]:
         return await dashboard_service.queues()
 
     @app.get("/api/favorites", response_model=dict[str, list[int]])

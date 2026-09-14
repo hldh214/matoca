@@ -3,13 +3,13 @@ function time(value) {
 }
 
 function statusText(item) {
-  return {called: "呼び出し済み", cancelled: "取消済み", unknown: "結果を確認できません"}[item.status] || "受付中";
+  return {pending: "受付結果を確認中", unresolved: "受付結果を確認できません", called: "呼び出し済み", cancelled: "取消済み", unknown: "結果を確認できません"}[item.status] || "受付中";
 }
 
 function render(queue) {
   const target = document.querySelector("#personal-queues");
   target.replaceChildren();
-  const active = queue.filter((item) => item.status === "active");
+  const active = queue.filter((item) => ["active", "pending", "unresolved"].includes(item.status));
   const shown = active.length ? active : queue.slice(0, 1);
   if (!shown.length) {
     target.textContent = "現在の順番待ちはありません";

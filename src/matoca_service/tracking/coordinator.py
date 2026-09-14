@@ -64,11 +64,16 @@ class QueueTrackingCoordinator:
                         )
 
     async def run(self) -> None:
+        loop = asyncio.get_running_loop()
+        next_due = loop.time()
         try:
             while not self._stop.is_set():
                 await self.run_once()
+                next_due += 60
                 with suppress(TimeoutError):
-                    await asyncio.wait_for(self._stop.wait(), timeout=60)
+                    await asyncio.wait_for(
+                        self._stop.wait(), timeout=max(0, next_due - loop.time())
+                    )
         finally:
             self._task = None
 

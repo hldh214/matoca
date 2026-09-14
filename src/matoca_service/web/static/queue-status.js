@@ -15,7 +15,7 @@ export class QueueStatus {
     this.form.addEventListener("submit", (event) => { event.preventDefault(); return this.cancel(); });
   }
 
-  get hasQueue() { return this.items.some((item) => item.status === "active"); }
+  get hasQueue() { return this.items.some((item) => ["active", "pending", "unresolved"].includes(item.status)); }
   get canJoin() { return this.known && !this.hasQueue && !this.busy; }
 
   async refresh() {
@@ -69,15 +69,17 @@ export class QueueStatus {
       this.target.textContent = this.readError ? "順番待ちを確認できませんでした" : "順番待ちを確認中です";
       return;
     }
-    const item = this.items.find((value) => value.status === "active") || this.items[0];
+    const item = this.items.find((value) => ["active", "pending", "unresolved"].includes(value.status)) || this.items[0];
     this.target.replaceChildren();
     if (!item) {
       this.target.textContent = "現在の順番待ちはありません";
     } else {
-      const shop = this.shops.find((value) => String(value.id) === String(item.shop_id));
+      const shop = encodeURIComponent(item.merchant_key) === this.api.merchantKey
+        ? this.shops.find((value) => String(value.id) === String(item.shop_id)) : null;
       const latest = item.observations?.at(-1);
       const active = this.node("div", "active-queue");
-      active.append(this.node("strong", "", shop?.sub_name || shop?.name || "受付中"));
+      active.append(this.node("strong", "", shop?.sub_name || shop?.name || item.shop_name
+        || item.merchant_name || "受付中"));
       const metrics = this.node("div", "queue-metrics");
       const estimate = officialEstimate(item.official_minutes_at_submission, item.official_is_more_at_submission);
       for (const [label, value] of [["受付番号", item.number ?? "—"], ["前の組数", `${latest?.count ?? "—"}組`], ["受付時の公式目安", estimate], ["最終更新", latest ? new Date(latest.observed_at).toLocaleTimeString("ja-JP", {hour: "2-digit", minute: "2-digit"}) : "—"]]) {
@@ -99,11 +101,12 @@ export class QueueStatus {
         });
         active.append(cancel);
       } else {
-        const labels = {called: "呼び出し済み", cancelled: "取消済み", unknown: "結果を確認できません"};
+        const labels = {pending: "受付結果を確認中です", unresolved: "受付結果を確認できません。再申込せず確認してください", called: "呼び出し済み", cancelled: "取消済み", unknown: "結果を確認できません"};
         active.append(this.node("p", "queue-terminal-status", labels[item.status] || "受付終了"));
       }
       this.target.append(active);
     }
+    if (item?.stale) this.target.append(this.node("p", "queue-read-error", "順番待ちの更新が遅れています。前回の情報を表示しています"));
     if (this.readError) this.target.append(this.node("p", "queue-read-error", "順番待ちを更新できませんでした。前回の情報を表示しています"));
   }
 

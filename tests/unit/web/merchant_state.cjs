@@ -129,10 +129,11 @@ async function setup(overrides = {}) {
     }
     if (url === '/api/queues') {
       const sessions = state.active.map((item) => ({...copy(item), waiting_id: item.id,
-        merchant_key: 'sawayaka',
-        status: 'active', source: 'manual', submitted_at: '2026-09-11T00:00:00Z',
+        merchant_key: item.merchant_key || 'sawayaka',
+        status: ['active', 'pending', 'unresolved', 'called', 'cancelled', 'unknown'].includes(item.status) ? item.status : 'active',
+        source: 'manual', submitted_at: '2026-09-11T00:00:00Z',
         official_minutes_at_submission: 25, official_is_more_at_submission: false,
-        observations: [{observed_at: '2026-09-11T00:01:00Z', count: item.count}]}));
+        observations: item.observations || [{observed_at: '2026-09-11T00:01:00Z', count: item.count}]}));
       return state.pendingWaiting || response(sessions, state.failWaiting ? 503 : 200);
     }
     if (url.startsWith('/api/shops/')) return state.pendingDetail || response(state.detail, state.failDetail ? 503 : 200);
@@ -334,6 +335,20 @@ const cases = {
       await app.submit('#join-form'); await app.get('#join-dialog').close();
     }
     assert.equal(app.state.calls.filter((call) => call.method === 'POST').length, 0);
+  },
+  async unresolved_intent_blocks_join_after_reload() {
+    const app = await setup({active: [{intent_id: 'intent-1', merchant_key: 'other', merchant_name: '別の加盟店', shop_id: 1,
+      submitted_at: '2026-09-11T00:00:00Z', official_minutes_at_submission: 25,
+      official_is_more_at_submission: false, adult_count: 2, child_count: 0,
+      source: 'manual', status: 'unresolved', error_code: 'send_outcome_unknown'}]});
+    assert.equal(app.get('.join-button').disabled, true);
+    assert.match(app.get('#current-queue').textContent, /別の加盟店/);
+    assert.match(app.get('#current-queue').textContent, /再申込せず確認してください/);
+  },
+  async successful_stale_queue_response_shows_warning() {
+    const app = await setup({active: [{...copy(waitingItem), stale: true}]});
+    assert.match(app.get('#current-queue').textContent, /更新が遅れています/);
+    assert.equal(app.get('.join-button').disabled, true);
   },
 };
 

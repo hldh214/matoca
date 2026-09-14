@@ -63,3 +63,18 @@ credentials, state, upstream mutations, service restarts, or pushes were used.
 - A transport failure during cancellation remains outcome-unknown and preserves cancellation
   evidence. A later observation of the same ticket after the request clears that evidence; a
   later disappearance resolves cancellation.
+
+## Review Round 1 Corrections
+
+- A submission response with an initial zero count now transitions directly to `called` with a
+  call timestamp.
+- The browser normalizes a successful create response into a tracked active-session shape before
+  any follow-up GET, so a failed refresh retains the known ticket and keeps duplicate joining
+  blocked.
+- Pending and unresolved intents are exposed as typed summaries without fabricated waiting IDs.
+  They remain visible and block admission account-wide across reloads and merchant pages.
+- Explicit cancellation overrides an already observed call and clears its call timestamp, keeping
+  the session excluded from future confirmed training evidence.
+- Successful stale queue responses now display a stale warning independently of HTTP errors.
+- Coordinator scheduling uses a monotonic fixed cadence so query duration does not add to every
+  minute interval.

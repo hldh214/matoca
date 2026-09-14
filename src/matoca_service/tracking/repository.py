@@ -4,7 +4,13 @@ from typing import cast
 
 from matoca_service.matoca.models import Waiting
 from matoca_service.storage.database import Database
-from matoca_service.tracking.models import QueueIntent, QueueObservation, QueueRead, QueueSession
+from matoca_service.tracking.models import (
+    QueueIntent,
+    QueueIntentSummary,
+    QueueObservation,
+    QueueRead,
+    QueueSession,
+)
 
 
 def _minute(value: datetime) -> datetime:
@@ -112,6 +118,13 @@ class QueueRepository:
                 "SELECT session_id FROM queue_sessions WHERE intent_id = ?", (intent_id,)
             ).fetchone()[0]
             self._save_observation(connection, session_id, observed_at, count)
+            if count == 0:
+                at = _text(_minute(observed_at))
+                connection.execute(
+                    """UPDATE queue_sessions SET status='called', called_at=?, terminal_at=?
+                       WHERE session_id=?""",
+                    (at, at, session_id),
+                )
 
         self._database.write(write)
         return next(item for item in self.list_sessions() if item.intent_id == intent_id)
@@ -280,8 +293,9 @@ class QueueRepository:
         at = _text(cancelled_at)
         self._database.write(
             lambda connection: connection.execute(
-                """UPDATE queue_sessions SET status='cancelled', cancelled_at=?, terminal_at=?
-               WHERE merchant_key=? AND waiting_id=? AND status='active'""",
+                """UPDATE queue_sessions SET status='cancelled', called_at=NULL,
+                          cancelled_at=?, terminal_at=?
+               WHERE merchant_key=? AND waiting_id=? AND status IN ('active', 'called')""",
                 (at, at, merchant_key, waiting_id),
             )
         )
@@ -308,6 +322,34 @@ class QueueRepository:
 
     def active_sessions(self) -> list[QueueSession]:
         return [item for item in self.list_sessions() if item.status == "active"]
+
+    def list_unfinished_intents(self) -> list[QueueIntentSummary]:
+        def read(connection: sqlite3.Connection) -> list[QueueIntentSummary]:
+            rows = connection.execute(
+                """SELECT intent_id, merchant_key, shop_id, submitted_at,
+                          official_minutes_at_submission, official_is_more_at_submission,
+                          adult_count, child_count, source, status, error_code
+                   FROM queue_intents WHERE status IN ('pending', 'unresolved')
+                   ORDER BY submitted_at DESC"""
+            ).fetchall()
+            return [
+                QueueIntentSummary(
+                    intent_id=row[0],
+                    merchant_key=row[1],
+                    shop_id=row[2],
+                    submitted_at=datetime.fromisoformat(row[3]),
+                    official_minutes_at_submission=row[4],
+                    official_is_more_at_submission=bool(row[5]) if row[5] is not None else None,
+                    adult_count=row[6],
+                    child_count=row[7],
+                    source=row[8],
+                    status=row[9],
+                    error_code=row[10],
+                )
+                for row in rows
+            ]
+
+        return self._database.read(read)
 
     def list_sessions(self) -> list[QueueSession]:
         def read(connection: sqlite3.Connection) -> list[QueueSession]:

@@ -47,7 +47,8 @@ export class MatocaApi {
   console() { return this.request(`${this.base}/console`); }
   async currentWaiting() {
     const items = await this.request("/api/queues");
-    return items.filter((item) => encodeURIComponent(item.merchant_key) === this.merchantKey);
+    return items.filter((item) => ["pending", "unresolved"].includes(item.status)
+      || encodeURIComponent(item.merchant_key) === this.merchantKey);
   }
   shopDetail(id) { return this.request(`/api/shops/${encodeURIComponent(id)}?merchant=${this.merchantKey}`); }
   createWaiting(body) { return this.request(`${this.base}/waiting`, "POST", body); }

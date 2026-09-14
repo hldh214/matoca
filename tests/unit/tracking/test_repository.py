@@ -56,6 +56,16 @@ def test_observed_zero_confirms_call_and_is_not_reopened(tmp_path: Path) -> None
     assert session.called_at == datetime(2026, 9, 13, 3, 5, tzinfo=UTC)
 
 
+def test_initial_zero_resolves_intent_as_called(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    repo.begin_intent(intent())
+
+    session = repo.resolve_intent("intent-1", waiting_id=9001, number=42, count=0, observed_at=NOW)
+
+    assert session.status == "called"
+    assert session.called_at == datetime(2026, 9, 13, 3, 4, tzinfo=UTC)
+
+
 def test_successful_disappearance_is_unknown_not_called(tmp_path: Path) -> None:
     repo = repository(tmp_path)
     repo.begin_intent(intent())
@@ -161,6 +171,10 @@ def test_unresolved_intent_blocks_another_submission(tmp_path: Path) -> None:
     with pytest.raises(sqlite3.IntegrityError):
         repo.begin_intent(intent().model_copy(update={"intent_id": "intent-2"}))
 
+    unfinished = repo.list_unfinished_intents()
+    assert unfinished[0].intent_id == "intent-1"
+    assert unfinished[0].status == "unresolved"
+
 
 def test_restart_reconciles_matching_waiting_to_original_intent(tmp_path: Path) -> None:
     repo = repository(tmp_path)
@@ -237,4 +251,16 @@ def test_cancellation_request_prevents_older_zero_from_becoming_training_evidenc
 
     session = repo.list_sessions()[0]
     assert session.status == "active"
+    assert session.called_at is None
+
+
+def test_explicit_cancellation_overrides_called_training_evidence(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    repo.begin_intent(intent())
+    repo.resolve_intent("intent-1", waiting_id=9001, number=42, count=0, observed_at=NOW)
+
+    repo.mark_cancelled("sawayaka", 9001, NOW + timedelta(minutes=1))
+
+    session = repo.list_sessions()[0]
+    assert session.status == "cancelled"
     assert session.called_at is None
