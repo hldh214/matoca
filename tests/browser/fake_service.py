@@ -16,6 +16,7 @@ from matoca_service.service import (
     QueueSubmission,
     UnknownMerchantError,
 )
+from matoca_service.tracking.models import QueueObservation, QueueSession
 
 FIXED_NOW = datetime(2026, 9, 10, 8, tzinfo=UTC)
 
@@ -27,6 +28,7 @@ class BrowserFakeService:
         self.refresh_calls = 0
         self.console_reads = 0
         self.waiting_reads = 0
+        self.queue_reads = 0
         self.favorite_ids: set[int] = set()
         self.favorite_delay_seconds = 0.0
         self.favorite_writes: list[tuple[int, bool]] = []
@@ -228,6 +230,34 @@ class BrowserFakeService:
         self._merchant(merchant_key)
         self.waiting_reads += 1
         return list(self._waiting[merchant_key])
+
+    async def queues(self) -> list[QueueSession]:
+        self.queue_reads += 1
+        merchants = {item.key: item.name for item in self._merchants}
+        return [
+            QueueSession(
+                session_id=waiting.id,
+                merchant_key=merchant_key,
+                merchant_name=merchants[merchant_key],
+                shop_id=int(waiting.shop_id),
+                shop_name=self._available_shop.sub_name,
+                waiting_id=waiting.id,
+                number=waiting.number,
+                adult_count=waiting.adult_count,
+                child_count=waiting.child_count,
+                source="manual",
+                submitted_at=FIXED_NOW,
+                first_observed_at=FIXED_NOW,
+                official_minutes_at_submission=25,
+                official_is_more_at_submission=False,
+                called_at=None,
+                cancelled_at=None,
+                status="active",
+                observations=[QueueObservation(observed_at=FIXED_NOW, count=waiting.count)],
+            )
+            for merchant_key, items in self._waiting.items()
+            for waiting in items
+        ]
 
     async def create_waiting(
         self,

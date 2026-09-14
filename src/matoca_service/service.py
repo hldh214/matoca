@@ -1,5 +1,8 @@
 import asyncio
+import sqlite3
+import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TypeVar
@@ -27,6 +30,9 @@ from matoca_service.storage.asyncio import run_storage
 from matoca_service.storage.database import Database
 from matoca_service.storage.models import UserPreferences
 from matoca_service.storage.repositories import PreferenceRepository, ShopRepository
+from matoca_service.tracking.coordinator import QueueTrackingCoordinator
+from matoca_service.tracking.models import QueueIntent, QueueSession
+from matoca_service.tracking.repository import QueueRepository
 
 T = TypeVar("T")
 _LIST_IDENTITY_FIELDS = (
@@ -48,6 +54,10 @@ class UnknownMerchantError(LookupError):
 
 
 class QueueUnavailableError(RuntimeError):
+    pass
+
+
+class QueueOutcomeUnknownError(RuntimeError):
     pass
 
 
@@ -220,6 +230,7 @@ class MatocaService:
         self._shops = ShopRepository(self._database)
         self._preferences = PreferenceRepository(self._database)
         self._analytics = AnalyticsRepository(self._database)
+        self._queues = QueueRepository(self._database)
         self._collector = CollectionService(self, self._shops)
         self._poll_schedule = PollSchedule(self._shops)
         self._collection_coordinator = CollectionCoordinator(
@@ -229,10 +240,17 @@ class MatocaService:
             self._shops,
         )
         self._operation_lock = asyncio.Lock()
+        self._tracking_coordinator = QueueTrackingCoordinator(
+            list(self._registry.merchants), self, self._queues, reader_persists=True
+        )
 
     @property
     def collection_coordinator(self) -> CollectionCoordinator:
         return self._collection_coordinator
+
+    @property
+    def tracking_coordinator(self) -> QueueTrackingCoordinator:
+        return self._tracking_coordinator
 
     def _merchant(self, merchant_key: str) -> MerchantConfig:
         try:
@@ -401,6 +419,43 @@ class MatocaService:
                 lambda client: client.list_waiting(),
             )
 
+    async def tracking_read(self, merchant_key: str) -> list[Waiting]:
+        async with self._operation_lock:
+            waiting = await self._authenticated_read(
+                merchant_key, lambda client: client.list_waiting()
+            )
+            await run_storage(
+                self._queues.record_waiting, merchant_key, datetime.now(tz=UTC), waiting
+            )
+            return waiting
+
+    async def queues(self) -> list[QueueSession]:
+        sessions = await run_storage(self._queues.list_sessions)
+        merchants = {item.key: item.name for item in self.list_merchants()}
+        shop_names: dict[tuple[str, int], str] = {}
+        for session in sessions:
+            if session.shop_id is None:
+                continue
+            for stored in await run_storage(self._shops.latest, session.merchant_key):
+                if stored.shop.id == session.shop_id:
+                    shop_names[(session.merchant_key, session.shop_id)] = (
+                        stored.shop.sub_name or stored.shop.name
+                    )
+                    break
+        return [
+            session.model_copy(
+                update={
+                    "merchant_name": merchants.get(session.merchant_key),
+                    "shop_name": (
+                        shop_names.get((session.merchant_key, session.shop_id))
+                        if session.shop_id is not None
+                        else None
+                    ),
+                }
+            )
+            for session in sessions
+        ]
+
     async def read_collection_cycle(self, merchant_key: str) -> CollectionCycle:
         async with self._operation_lock:
             observed_at = datetime.now(tz=UTC)
@@ -489,56 +544,128 @@ class MatocaService:
 
     async def create_waiting(self, merchant_key: str, submission: QueueSubmission) -> Waiting:
         async with self._operation_lock:
-            merchant = self._merchant(merchant_key)
-            lat, lng = await run_storage(
-                self._stored_shop_coordinates,
-                merchant_key,
-                submission.shop_id,
+            return await self._create_waiting_unlocked(merchant_key, submission)
+
+    async def _create_waiting_unlocked(
+        self, merchant_key: str, submission: QueueSubmission
+    ) -> Waiting:
+        merchant = self._merchant(merchant_key)
+        lat, lng = await run_storage(
+            self._stored_shop_coordinates,
+            merchant_key,
+            submission.shop_id,
+        )
+        if lat is None or lng is None:
+            raise QueueUnavailableError("店舗の位置情報を取得できません")
+        async with httpx.AsyncClient(http2=True, timeout=30) as http:
+            manager = TokenManager(
+                self._store,
+                LineRefreshClient(self._line_config, http),
+                liff_client=LiffClient(self._line_config, http),
             )
-            if lat is None or lng is None:
-                raise QueueUnavailableError("店舗の位置情報を取得できません")
-            async with httpx.AsyncClient(http2=True, timeout=30) as http:
-                manager = TokenManager(
-                    self._store,
-                    LineRefreshClient(self._line_config, http),
-                    liff_client=LiffClient(self._line_config, http),
+            await manager.ensure_native_token()
+
+            async def prepare(*, force_liff: bool) -> tuple[MatocaClient, Shop, list[Waiting]]:
+                liff = await manager.ensure_liff_token(
+                    liff_id=merchant.liff_id,
+                    merchant=merchant,
+                    force=force_liff,
                 )
-                await manager.ensure_native_token()
-
-                async def prepare(*, force_liff: bool) -> tuple[MatocaClient, Shop, list[Waiting]]:
-                    liff = await manager.ensure_liff_token(
-                        liff_id=merchant.liff_id,
-                        merchant=merchant,
-                        force=force_liff,
-                    )
-                    client = MatocaClient(merchant, http, liff.access_token)
-                    await client.authenticate()
-                    shop, waiting = await asyncio.gather(
-                        client.get_shop(submission.shop_id, lat=lat, lng=lng),
-                        client.list_waiting(),
-                    )
-                    return client, shop, waiting
-
-                try:
-                    client, shop, waiting = await prepare(force_liff=False)
-                except httpx.HTTPStatusError as error:
-                    if error.response.status_code not in {401, 403}:
-                        raise
-                    client, shop, waiting = await prepare(force_liff=True)
-
-                validate_queue_submission(shop, submission, waiting)
-                assert shop.lat is not None and shop.lng is not None
-                request = CreateWaitingRequest(
-                    shop_id=str(shop.id),
-                    adult_count=submission.adult_count,
-                    child_count=submission.child_count,
-                    answer1=submission.answer1,
-                    answer2=submission.answer2,
-                    lat=float(shop.lat),
-                    lng=float(shop.lng),
-                    in_advance_information=submission.in_advance_information,
+                client = MatocaClient(merchant, http, liff.access_token)
+                await client.authenticate()
+                shop, waiting = await asyncio.gather(
+                    client.get_shop(submission.shop_id, lat=lat, lng=lng),
+                    client.list_waiting(),
                 )
-                return await client.create_waiting(request)
+                return client, shop, waiting
+
+            try:
+                client, shop, waiting = await prepare(force_liff=False)
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code not in {401, 403}:
+                    raise
+                client, shop, waiting = await prepare(force_liff=True)
+
+            validate_queue_submission(shop, submission, waiting)
+            assert shop.lat is not None and shop.lng is not None
+            request = CreateWaitingRequest(
+                shop_id=str(shop.id),
+                adult_count=submission.adult_count,
+                child_count=submission.child_count,
+                answer1=submission.answer1,
+                answer2=submission.answer2,
+                lat=float(shop.lat),
+                lng=float(shop.lng),
+                in_advance_information=submission.in_advance_information,
+            )
+            intent = QueueIntent(
+                intent_id=str(uuid.uuid4()),
+                merchant_key=merchant_key,
+                shop_id=submission.shop_id,
+                submitted_at=datetime.now(tz=UTC),
+                official_minutes_at_submission=(
+                    shop.waiting_time.minutes if shop.waiting_time is not None else None
+                ),
+                official_is_more_at_submission=(
+                    shop.waiting_time.is_more if shop.waiting_time is not None else None
+                ),
+                adult_count=submission.adult_count,
+                child_count=submission.child_count,
+            )
+            try:
+                await run_storage(self._queues.begin_intent, intent)
+            except sqlite3.IntegrityError as error:
+                raise QueueUnavailableError(
+                    "受付結果を確認中です。現在の受付を確認してから操作してください"
+                ) from error
+            try:
+                created = await client.create_waiting(request)
+            except MatocaApiError as error:
+                await run_storage(
+                    self._queues.mark_intent_failed, intent.intent_id, "upstream_rejected"
+                )
+                raise QueueUnavailableError("受付が受理されませんでした") from error
+            except httpx.HTTPStatusError as error:
+                if 400 <= error.response.status_code < 500:
+                    await run_storage(
+                        self._queues.mark_intent_failed, intent.intent_id, "upstream_rejected"
+                    )
+                    raise QueueUnavailableError("受付が受理されませんでした") from error
+                await run_storage(
+                    self._queues.mark_intent_unresolved,
+                    intent.intent_id,
+                    "send_outcome_unknown",
+                )
+                raise QueueOutcomeUnknownError(
+                    "受付結果を確認できません。再申込せず、現在の受付を確認してください"
+                ) from error
+            except Exception as error:
+                await run_storage(
+                    self._queues.mark_intent_unresolved, intent.intent_id, "send_outcome_unknown"
+                )
+                raise QueueOutcomeUnknownError(
+                    "受付結果を確認できません。再申込せず、現在の受付を確認してください"
+                ) from error
+            try:
+                await run_storage(
+                    self._queues.resolve_intent,
+                    intent.intent_id,
+                    waiting_id=created.id,
+                    number=created.number,
+                    count=created.count,
+                    observed_at=datetime.now(tz=UTC),
+                )
+            except (sqlite3.Error, OSError) as error:
+                with suppress(sqlite3.Error, OSError):
+                    await run_storage(
+                        self._queues.mark_intent_unresolved,
+                        intent.intent_id,
+                        "post_send_persistence_failed",
+                    )
+                raise QueueOutcomeUnknownError(
+                    "受付結果を確認できません。再申込せず、現在の受付を確認してください"
+                ) from error
+            return created
 
     def _stored_shop_coordinates(
         self,
@@ -579,7 +706,41 @@ class MatocaService:
                     client, waiting = await authenticate(force_liff=True)
                 if not any(item.id == waiting_id for item in waiting):
                     raise QueueUnavailableError("取消対象の順番待ちが見つかりません")
-                await client.cancel_waiting(waiting_id)
+                requested_at = datetime.now(tz=UTC)
+                await run_storage(
+                    self._queues.mark_cancellation_requested,
+                    merchant_key,
+                    waiting_id,
+                    requested_at,
+                )
+                try:
+                    await client.cancel_waiting(waiting_id)
+                except MatocaApiError:
+                    await run_storage(
+                        self._queues.clear_cancellation_requested, merchant_key, waiting_id
+                    )
+                    raise
+                except httpx.HTTPStatusError as error:
+                    if 400 <= error.response.status_code < 500:
+                        await run_storage(
+                            self._queues.clear_cancellation_requested,
+                            merchant_key,
+                            waiting_id,
+                        )
+                        raise
+                    raise QueueOutcomeUnknownError(
+                        "取消結果を確認できません。現在の受付を確認してください"
+                    ) from error
+                except Exception as error:
+                    raise QueueOutcomeUnknownError(
+                        "取消結果を確認できません。現在の受付を確認してください"
+                    ) from error
+                await run_storage(
+                    self._queues.mark_cancelled,
+                    merchant_key,
+                    waiting_id,
+                    requested_at,
+                )
 
     async def _authenticated_read(
         self,

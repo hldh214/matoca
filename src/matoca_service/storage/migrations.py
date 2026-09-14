@@ -170,6 +170,74 @@ def _create_shop_favorites(connection: sqlite3.Connection) -> None:
     """)
 
 
+def _create_queue_tracking(connection: sqlite3.Connection) -> None:
+    statements = (
+        """
+        CREATE TABLE queue_intents (
+            intent_id TEXT PRIMARY KEY,
+            merchant_key TEXT NOT NULL,
+            shop_id INTEGER NOT NULL,
+            submitted_at TEXT NOT NULL,
+            official_minutes_at_submission INTEGER,
+            official_is_more_at_submission INTEGER,
+            adult_count INTEGER NOT NULL,
+            child_count INTEGER NOT NULL,
+            source TEXT NOT NULL CHECK (source IN ('manual', 'automation')),
+            status TEXT NOT NULL CHECK (status IN ('pending', 'resolved', 'unresolved', 'failed')),
+            waiting_id INTEGER,
+            error_code TEXT
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX queue_intents_unfinished_account
+        ON queue_intents ((1)) WHERE status IN ('pending', 'unresolved')
+        """,
+        """
+        CREATE TABLE queue_sessions (
+            session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            intent_id TEXT UNIQUE,
+            merchant_key TEXT NOT NULL,
+            shop_id INTEGER,
+            waiting_id INTEGER NOT NULL,
+            number INTEGER,
+            adult_count INTEGER,
+            child_count INTEGER,
+            source TEXT NOT NULL CHECK (source IN ('manual', 'automation', 'adopted')),
+            submitted_at TEXT,
+            first_observed_at TEXT NOT NULL,
+            official_minutes_at_submission INTEGER,
+            official_is_more_at_submission INTEGER,
+            called_at TEXT,
+            cancelled_at TEXT,
+            terminal_at TEXT,
+            status TEXT NOT NULL CHECK (status IN ('active', 'called', 'cancelled', 'unknown')),
+            cancellation_requested_at TEXT,
+            UNIQUE (merchant_key, waiting_id),
+            FOREIGN KEY (intent_id) REFERENCES queue_intents (intent_id)
+        )
+        """,
+        """
+        CREATE TABLE queue_session_observations (
+            session_id INTEGER NOT NULL,
+            observed_minute TEXT NOT NULL,
+            count INTEGER,
+            PRIMARY KEY (session_id, observed_minute),
+            FOREIGN KEY (session_id) REFERENCES queue_sessions (session_id)
+        )
+        """,
+        """
+        CREATE TABLE queue_tracking_state (
+            merchant_key TEXT PRIMARY KEY,
+            last_attempt_at TEXT NOT NULL,
+            last_success_at TEXT,
+            error_code TEXT
+        )
+        """,
+    )
+    for statement in statements:
+        connection.execute(statement)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _bootstrap_metadata,
     _create_business_storage,
@@ -177,6 +245,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _create_observation_rollups,
     _create_catalog_state,
     _create_shop_favorites,
+    _create_queue_tracking,
 )
 
 

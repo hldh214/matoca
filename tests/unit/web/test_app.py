@@ -15,6 +15,7 @@ from matoca_service.service import (
     MerchantSummary,
     PartyPreferences,
 )
+from matoca_service.tracking.models import QueueObservation, QueueSession
 from matoca_service.web.app import create_app
 
 
@@ -131,6 +132,31 @@ class FakeDashboardService:
         assert waiting_id == 125000001
         return Waiting(id=waiting_id, count=72, number=87)
 
+    async def queues(self) -> list[QueueSession]:
+        observed_at = datetime(2026, 9, 13, 3, 4, tzinfo=UTC)
+        return [
+            QueueSession(
+                session_id=1,
+                merchant_key="sawayaka",
+                merchant_name="炭焼きレストラン さわやか",
+                shop_id=3272,
+                shop_name="浜松テスト店",
+                waiting_id=9001,
+                number=42,
+                adult_count=2,
+                child_count=0,
+                source="manual",
+                submitted_at=observed_at,
+                first_observed_at=observed_at,
+                official_minutes_at_submission=25,
+                official_is_more_at_submission=False,
+                called_at=None,
+                cancelled_at=None,
+                status="active",
+                observations=[QueueObservation(observed_at=observed_at, count=5)],
+            )
+        ]
+
 
 def test_web_module_import_does_not_require_runtime_files(tmp_path: Path) -> None:
     result = subprocess.run(
@@ -164,6 +190,24 @@ async def test_home_page_renders_japanese_merchant_selector_without_tokens() -> 
     assert "ブランド" not in response.text
     assert "access_token" not in response.text
     assert "liff-secret" not in response.text
+    assert 'id="personal-queues"' in response.text
+    assert "/static/tracking.js" in response.text
+
+
+@pytest.mark.asyncio
+async def test_queues_api_returns_cross_merchant_selected_tracking_fields() -> None:
+    app = create_app(FakeDashboardService())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/queues")
+
+    assert response.status_code == 200
+    queue = response.json()[0]
+    assert queue["merchant_name"] == "炭焼きレストラン さわやか"
+    assert queue["shop_name"] == "浜松テスト店"
+    assert queue["observations"] == [{"observed_at": "2026-09-13T03:04:00Z", "count": 5}]
+    assert "waiting_time" not in queue
 
 
 @pytest.mark.asyncio

@@ -204,12 +204,13 @@ def test_joins_and_cancels_a_synthetic_queue(
     open_sawayaka_console(safe_page, browser_base_url)
     safe_page.clock.pause_at(TEST_CLOCK_PAUSED)
     waiting_url = f"{browser_base_url}/api/merchants/sawayaka/waiting"
+    queues_url = f"{browser_base_url}/api/queues"
     response_events: list[tuple[str, str]] = []
     safe_page.on(
         "response",
         lambda response: response_events.append((response.request.method, response.url)),
     )
-    assert browser_service.waiting_reads == 1
+    assert browser_service.waiting_reads == 0
     safe_page.get_by_role("button", name="すべて").click()
     expect(safe_page.locator(".shop-row")).to_have_count(4)
     safe_page.get_by_role("button", name="今すぐ受付").click()
@@ -249,7 +250,7 @@ def test_joins_and_cancels_a_synthetic_queue(
             lambda response: response.url == waiting_url and response.request.method == "POST"
         ) as join_response_info,
         safe_page.expect_request_finished(
-            lambda request: request.url == waiting_url and request.method == "GET",
+            lambda request: request.url == queues_url and request.method == "GET",
             timeout=5_000,
         ) as join_reload_info,
     ):
@@ -257,11 +258,13 @@ def test_joins_and_cancels_a_synthetic_queue(
 
     assert join_response_info.value.status == 200
     assert join_reload_info.value.method == "GET"
-    assert [event for event in response_events[event_offset:] if event[1] == waiting_url] == [
+    assert [
+        event for event in response_events[event_offset:] if event[1] in {waiting_url, queues_url}
+    ] == [
         ("POST", waiting_url),
-        ("GET", waiting_url),
+        ("GET", queues_url),
     ]
-    assert browser_service.waiting_reads == 2
+    assert browser_service.waiting_reads == 0
     expect(join_dialog).to_be_hidden()
     assert browser_service.submissions[-1].model_dump() == {
         "shop_id": 3272,
@@ -288,7 +291,7 @@ def test_joins_and_cancels_a_synthetic_queue(
             lambda response: response.url == cancel_url and response.request.method == "DELETE"
         ) as cancel_response_info,
         safe_page.expect_request_finished(
-            lambda request: request.url == waiting_url and request.method == "GET",
+            lambda request: request.url == queues_url and request.method == "GET",
             timeout=5_000,
         ) as cancel_reload_info,
     ):
@@ -297,9 +300,9 @@ def test_joins_and_cancels_a_synthetic_queue(
     assert cancel_response_info.value.status == 204
     assert cancel_reload_info.value.method == "GET"
     assert [
-        event for event in response_events[event_offset:] if event[1] in {waiting_url, cancel_url}
-    ] == [("DELETE", cancel_url), ("GET", waiting_url)]
-    assert browser_service.waiting_reads == 3
+        event for event in response_events[event_offset:] if event[1] in {queues_url, cancel_url}
+    ] == [("DELETE", cancel_url), ("GET", queues_url)]
+    assert browser_service.waiting_reads == 0
     expect(cancel_dialog).to_be_hidden()
     expect(safe_page.get_by_text("現在の順番待ちはありません", exact=True)).to_be_visible()
     expect(safe_page.get_by_role("button", name="今すぐ受付")).to_be_enabled()
@@ -318,7 +321,7 @@ def test_manual_refresh_is_distinct_from_automatic_reads(
     open_sawayaka_console(safe_page, browser_base_url)
     safe_page.clock.pause_at(TEST_CLOCK_PAUSED)
     assert browser_service.console_reads == 1
-    assert browser_service.waiting_reads == 1
+    assert browser_service.queue_reads == 1
 
     refresh = safe_page.get_by_role("button", name="最新情報に更新")
     refresh.click()
@@ -326,16 +329,17 @@ def test_manual_refresh_is_distinct_from_automatic_reads(
     assert browser_service.refresh_calls == 1
     reads_after_manual_refresh = (
         browser_service.console_reads,
-        browser_service.waiting_reads,
+        browser_service.queue_reads,
     )
 
     with (
         safe_page.expect_response(re.compile(r"/api/merchants/sawayaka/console$")),
-        safe_page.expect_response(re.compile(r"/api/merchants/sawayaka/waiting$")),
+        safe_page.expect_response(re.compile(r"/api/queues$")),
     ):
         safe_page.clock.run_for(30_000)
 
     assert browser_service.console_reads > reads_after_manual_refresh[0]
-    assert browser_service.waiting_reads > reads_after_manual_refresh[1]
+    assert browser_service.queue_reads > reads_after_manual_refresh[1]
+    assert browser_service.waiting_reads == 0
     assert browser_service.refresh_calls == 1
     assert_clean_browser()

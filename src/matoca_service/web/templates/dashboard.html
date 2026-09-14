@@ -6,12 +6,20 @@
     <title>Matoca | 加盟店を選ぶ</title>
     <link rel="stylesheet" href="{{ url_for('static', path='/dashboard.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', path='/merchant-selector.css') }}">
+    <script type="module" src="{{ url_for('static', path='/tracking.js') }}" defer></script>
   </head>
   <body>
     <header class="app-header">
       <a class="wordmark" href="/">Matoca</a>
     </header>
     <main class="selector-main">
+      <section class="personal-queues" aria-labelledby="personal-queues-title">
+        <div>
+          <p>現在の受付</p>
+          <h1 id="personal-queues-title">あなたの順番待ち</h1>
+        </div>
+        <div id="personal-queues" aria-live="polite">順番待ちを確認しています</div>
+      </section>
       <div class="page-title">
         <p>順番待ちサービス</p>
         <h1>利用する加盟店を選ぶ</h1>

@@ -29,6 +29,13 @@ button, a { -webkit-tap-highlight-color: transparent; }
 
 .selector-main { padding: 44px 0 72px; }
 
+.personal-queues { margin-bottom: 32px; padding: 18px 20px; display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 18px; color: #fff; background: #2b2e2a; border-left: 4px solid #c93630; }
+.personal-queues h1 { margin: 0; font-size: 17px; }
+.personal-queues p { margin: 0 0 6px; color: #b8bcb5; font-size: 12px; font-weight: 700; }
+.personal-queue-row { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; color: #fff; text-decoration: none; }
+.personal-queue-row + .personal-queue-row { border-top: 1px solid #555951; }
+.personal-queue-row span { color: #d5d8d2; font-size: 13px; }
+
 .page-title p, .queue-band p, .dialog-kicker { margin: 0 0 6px; color: #70746e; font-size: 12px; font-weight: 700; }
 
 h1, h2, h3, p { margin-top: 0; }
@@ -39,4 +46,6 @@ h1, h2, h3, p { margin-top: 0; }
   .app-header { padding: 0 16px; }
   .selector-main, .console-main { width: calc(100% - 24px); }
   .selector-main { padding: 28px 0 48px; }
+  .personal-queues { grid-template-columns: 1fr; gap: 8px; }
+  .personal-queue-row { flex-direction: column; gap: 4px; }
 }

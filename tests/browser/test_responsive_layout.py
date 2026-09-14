@@ -184,9 +184,9 @@ def test_console_geometry_across_supported_viewports(
     join_dialog = safe_page.get_by_role("dialog", name="浜松テスト店")
     expect(join_dialog.locator("#join-form")).to_have_attribute("aria-busy", "false")
     assert_dialog_reachable(join_dialog, safe_page)
-    waiting_url = f"{browser_base_url}/api/merchants/sawayaka/waiting"
+    queues_url = f"{browser_base_url}/api/queues"
     with safe_page.expect_request_finished(
-        lambda request: request.url == waiting_url and request.method == "GET",
+        lambda request: request.url == queues_url and request.method == "GET",
         timeout=5_000,
     ):
         join_dialog.get_by_role("button", name="この内容で順番待ちを申し込む").click()

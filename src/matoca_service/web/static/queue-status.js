@@ -15,7 +15,7 @@ export class QueueStatus {
     this.form.addEventListener("submit", (event) => { event.preventDefault(); return this.cancel(); });
   }
 
-  get hasQueue() { return this.items.length > 0; }
+  get hasQueue() { return this.items.some((item) => item.status === "active"); }
   get canJoin() { return this.known && !this.hasQueue && !this.busy; }
 
   async refresh() {
@@ -69,34 +69,39 @@ export class QueueStatus {
       this.target.textContent = this.readError ? "順番待ちを確認できませんでした" : "順番待ちを確認中です";
       return;
     }
-    const item = this.items[0];
+    const item = this.items.find((value) => value.status === "active") || this.items[0];
     this.target.replaceChildren();
     if (!item) {
       this.target.textContent = "現在の順番待ちはありません";
     } else {
       const shop = this.shops.find((value) => String(value.id) === String(item.shop_id));
+      const latest = item.observations?.at(-1);
       const active = this.node("div", "active-queue");
       active.append(this.node("strong", "", shop?.sub_name || shop?.name || "受付中"));
       const metrics = this.node("div", "queue-metrics");
-      const estimate = item.waiting_time
-        ? officialEstimate(item.waiting_time.minutes, item.waiting_time.is_more)
-        : officialEstimate(shop?.official_waiting_minutes, shop?.official_waiting_is_more);
-      for (const [label, value] of [["受付番号", item.number ?? "—"], ["前の組数", `${item.count ?? "—"}組`], ["公式目安", estimate]]) {
+      const estimate = officialEstimate(item.official_minutes_at_submission, item.official_is_more_at_submission);
+      for (const [label, value] of [["受付番号", item.number ?? "—"], ["前の組数", `${latest?.count ?? "—"}組`], ["受付時の公式目安", estimate], ["最終更新", latest ? new Date(latest.observed_at).toLocaleTimeString("ja-JP", {hour: "2-digit", minute: "2-digit"}) : "—"]]) {
         const metric = this.node("span", "", label);
         metric.append(this.node("b", "", value));
         metrics.append(metric);
       }
-      const cancel = this.node("button", "text-button", "取消");
-      cancel.id = "cancel-button";
-      cancel.type = "button";
-      cancel.disabled = this.busy;
-      cancel.addEventListener("click", () => {
-        this.document.querySelector("#cancel-error").textContent = "";
-        this.document.querySelector("#cancel-detail").textContent = `受付番号 ${item.number ?? item.id}`;
-        this.dialog.dataset.waitingId = String(item.id);
-        this.dialog.showModal();
-      });
-      active.append(metrics, cancel);
+      active.append(metrics);
+      if (item.status === "active") {
+        const cancel = this.node("button", "text-button", "取消");
+        cancel.id = "cancel-button";
+        cancel.type = "button";
+        cancel.disabled = this.busy;
+        cancel.addEventListener("click", () => {
+          this.document.querySelector("#cancel-error").textContent = "";
+          this.document.querySelector("#cancel-detail").textContent = `受付番号 ${item.number ?? item.id}`;
+          this.dialog.dataset.waitingId = String(item.waiting_id);
+          this.dialog.showModal();
+        });
+        active.append(cancel);
+      } else {
+        const labels = {called: "呼び出し済み", cancelled: "取消済み", unknown: "結果を確認できません"};
+        active.append(this.node("p", "queue-terminal-status", labels[item.status] || "受付終了"));
+      }
       this.target.append(active);
     }
     if (this.readError) this.target.append(this.node("p", "queue-read-error", "順番待ちを更新できませんでした。前回の情報を表示しています"));
@@ -104,7 +109,7 @@ export class QueueStatus {
 
   async cancel() {
     const id = this.dialog.dataset.waitingId;
-    if (!this.items.some((item) => String(item.id) === id) || !this.beginMutation()) return;
+    if (!this.items.some((item) => String(item.waiting_id) === id) || !this.beginMutation()) return;
     const errorTarget = this.document.querySelector("#cancel-error");
     errorTarget.textContent = "";
     this.form.setAttribute("aria-busy", "true");
@@ -112,7 +117,7 @@ export class QueueStatus {
     let succeeded = false;
     try {
       await this.api.cancelWaiting(id);
-      this.finishMutation(this.items.filter((item) => String(item.id) !== id));
+      this.finishMutation(this.items.filter((item) => String(item.waiting_id) !== id));
       this.dialog.close();
       succeeded = true;
     } catch (error) {

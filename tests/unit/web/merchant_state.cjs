@@ -127,6 +127,14 @@ async function setup(overrides = {}) {
       }
       return response(state.preferences);
     }
+    if (url === '/api/queues') {
+      const sessions = state.active.map((item) => ({...copy(item), waiting_id: item.id,
+        merchant_key: 'sawayaka',
+        status: 'active', source: 'manual', submitted_at: '2026-09-11T00:00:00Z',
+        official_minutes_at_submission: 25, official_is_more_at_submission: false,
+        observations: [{observed_at: '2026-09-11T00:01:00Z', count: item.count}]}));
+      return state.pendingWaiting || response(sessions, state.failWaiting ? 503 : 200);
+    }
     if (url.startsWith('/api/shops/')) return state.pendingDetail || response(state.detail, state.failDetail ? 503 : 200);
     if (url.endsWith('/waiting') && method === 'GET') return state.pendingWaiting || response(state.active, state.failWaiting ? 503 : 200);
     if (url.endsWith('/waiting') && method === 'POST') {
@@ -257,7 +265,7 @@ const cases = {
     const app = await setup(); assert.ok(app.state.timers.length > 0); assert.ok(app.state.timers.every((timer) => timer.delay === 30000));
     const before = app.state.calls.length; app.document.hidden = true; await app.tick(); assert.equal(app.state.calls.length, before);
     app.document.hidden = false; await app.document.emit('visibilitychange'); await flush();
-    for (const suffix of ['/console', '/waiting']) assert.ok(app.state.calls.filter((call) => call.url.endsWith(suffix)).length >= 2);
+    for (const suffix of ['/console', '/api/queues']) assert.ok(app.state.calls.filter((call) => call.url.endsWith(suffix)).length >= 2);
     assert.equal(app.state.calls.filter((call) => call.url.endsWith('/refresh')).length, 0); await app.click('#refresh-button');
     assert.equal(app.state.calls.filter((call) => call.url.endsWith('/refresh')).length, 1); assert.ok(app.state.calls.at(-1).url.endsWith('/console'));
     for (const call of app.state.calls) {

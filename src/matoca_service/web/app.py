@@ -24,10 +24,12 @@ from matoca_service.service import (
     MerchantSnapshot,
     MerchantSummary,
     PartyPreferences,
+    QueueOutcomeUnknownError,
     QueueSubmission,
     QueueUnavailableError,
     UnknownMerchantError,
 )
+from matoca_service.tracking.models import QueueSession
 from matoca_service.web.timezone import localize_datetime, parse_timezone
 
 WEB_ROOT = Path(__file__).parent
@@ -85,6 +87,8 @@ class DashboardService(Protocol):
 
     async def cancel_waiting(self, merchant_key: str, waiting_id: int) -> None: ...
 
+    async def queues(self) -> list[QueueSession]: ...
+
 
 class CollectionLifecycle(Protocol):
     def start(self) -> None: ...
@@ -126,9 +130,18 @@ def create_app(
         del app
         if coordinator is not None:
             coordinator.start()
+        tracking = (
+            dashboard_service.tracking_coordinator
+            if isinstance(dashboard_service, MatocaService)
+            else None
+        )
+        if tracking is not None:
+            tracking.start()
         try:
             yield
         finally:
+            if tracking is not None:
+                await tracking.stop()
             if coordinator is not None:
                 await coordinator.stop()
 
@@ -151,6 +164,15 @@ def create_app(
     ) -> JSONResponse:
         del request
         return JSONResponse(status_code=409, content={"detail": str(error)})
+
+    @app.exception_handler(QueueOutcomeUnknownError)
+    async def queue_unknown_handler(
+        request: Request, error: QueueOutcomeUnknownError
+    ) -> JSONResponse:
+        del request
+        return JSONResponse(
+            status_code=503, content={"detail": str(error), "code": "queue_outcome_unknown"}
+        )
 
     @app.get("/", response_class=HTMLResponse)
     async def merchant_selector_page(request: Request) -> HTMLResponse:
@@ -209,6 +231,10 @@ def create_app(
     @app.get("/api/merchants", response_model=list[MerchantSummary])
     async def merchants_api() -> list[MerchantSummary]:
         return dashboard_service.list_merchants()
+
+    @app.get("/api/queues", response_model=list[QueueSession])
+    async def queues_api() -> list[QueueSession]:
+        return await dashboard_service.queues()
 
     @app.get("/api/favorites", response_model=dict[str, list[int]])
     async def favorites_api() -> dict[str, list[int]]:
