@@ -16,14 +16,15 @@ function render(queue) {
     return;
   }
   for (const item of shown) {
-    const latest = item.observations.at(-1);
+    const latest = item.observations?.at(-1);
+    const updatedAt = latest?.observed_at ?? item.submitted_at;
     const link = document.createElement("a");
     link.className = "personal-queue-row";
     link.href = `/merchants/${encodeURIComponent(item.merchant_key)}`;
     const name = document.createElement("strong");
     name.textContent = `${item.merchant_name || item.merchant_key}・${item.shop_name || "受付中"}`;
     const status = document.createElement("span");
-    status.textContent = `${statusText(item)}・受付番号 ${item.number ?? "—"}・前 ${latest?.count ?? "—"}組・更新 ${latest ? time(latest.observed_at) : "—"}${item.stale ? "・更新待ち" : ""}`;
+    status.textContent = `${statusText(item)}・受付番号 ${item.number ?? "—"}・前 ${latest?.count ?? "—"}組・更新 ${updatedAt ? time(updatedAt) : "—"}${item.stale ? "・更新待ち" : ""}`;
     link.append(name, status);
     target.append(link);
   }

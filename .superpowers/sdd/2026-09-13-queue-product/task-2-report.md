@@ -78,3 +78,25 @@ credentials, state, upstream mutations, service restarts, or pushes were used.
 - Successful stale queue responses now display a stale warning independently of HTTP errors.
 - Coordinator scheduling uses a monotonic fixed cadence so query duration does not add to every
   minute interval.
+
+## Review Round 2 Corrections
+
+- Homepage tracking now renders pending and unresolved intent summaries without observations,
+  using `submitted_at` as their update timestamp instead of failing the entire queue display.
+- Successful create responses with `count=0` are normalized immediately as `called` with a
+  matching `called_at`, so a failed follow-up queue read cannot temporarily expose cancellation.
+- Added browser regressions for an unresolved intent across a real homepage reload and for a
+  zero-count create followed by an unreadable `/api/queues` response.
+
+Focused verification:
+
+- `UV_CACHE_DIR=/tmp/matoca-uv-cache uv run --no-sync pytest -q tests/unit/web/test_merchant_state.py tests/unit/web/test_static_assets.py`
+  - 26 passed
+- `UV_CACHE_DIR=/tmp/matoca-uv-cache uv run --group browser --no-sync pytest -q -m browser tests/browser/test_merchant_console.py`
+  - 9 passed
+- `UV_CACHE_DIR=/tmp/matoca-uv-cache uv run --no-sync ruff check tests/browser/fake_service.py tests/browser/test_merchant_console.py`
+  - passed
+- `UV_CACHE_DIR=/tmp/matoca-uv-cache uv run --no-sync ruff format --check tests/browser/fake_service.py tests/browser/test_merchant_console.py`
+  - 2 files already formatted
+- `git diff --check`
+  - clean

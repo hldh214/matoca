@@ -16,7 +16,7 @@ from matoca_service.service import (
     QueueSubmission,
     UnknownMerchantError,
 )
-from matoca_service.tracking.models import QueueObservation, QueueSession
+from matoca_service.tracking.models import QueueIntentSummary, QueueObservation, QueueSession
 
 FIXED_NOW = datetime(2026, 9, 10, 8, tzinfo=UTC)
 
@@ -32,6 +32,8 @@ class BrowserFakeService:
         self.favorite_ids: set[int] = set()
         self.favorite_delay_seconds = 0.0
         self.favorite_writes: list[tuple[int, bool]] = []
+        self.queue_intents: list[QueueIntentSummary] = []
+        self.create_count = 8
         self._waiting: dict[str, list[Waiting]] = {
             "sawayaka": [],
             "la_ohana_yokohamahonmoku": [],
@@ -231,7 +233,7 @@ class BrowserFakeService:
         self.waiting_reads += 1
         return list(self._waiting[merchant_key])
 
-    async def queues(self) -> list[QueueSession]:
+    async def queues(self) -> list[QueueSession | QueueIntentSummary]:
         self.queue_reads += 1
         merchants = {item.key: item.name for item in self._merchants}
         return [
@@ -257,7 +259,7 @@ class BrowserFakeService:
             )
             for merchant_key, items in self._waiting.items()
             for waiting in items
-        ]
+        ] + self.queue_intents
 
     async def create_waiting(
         self,
@@ -273,7 +275,7 @@ class BrowserFakeService:
                 "adult_count": submission.adult_count,
                 "child_count": submission.child_count,
                 "number": 101,
-                "count": 8,
+                "count": self.create_count,
                 "waiting_time": {"minutes": 25, "is_more": False},
             }
         )

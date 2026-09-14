@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
 
 from matoca_service.service import PartyPreferences
+from matoca_service.tracking.models import QueueIntentSummary
 
 from .fake_service import BrowserFakeService
 
 if TYPE_CHECKING:
-    from playwright.sync_api import Locator, Page
+    from playwright.sync_api import Locator, Page, Route
 
 pytestmark = pytest.mark.browser
 TEST_CLOCK_START = datetime(2026, 9, 12, 12)
@@ -69,6 +70,43 @@ def test_selects_merchant_and_filters_shops(
     safe_page.get_by_role("searchbox", name="店舗を検索").fill("休業")
     expect(safe_page.locator(".shop-row")).to_have_count(1)
     expect(safe_page.get_by_text("休業テスト店", exact=True)).to_be_visible()
+    assert_clean_browser()
+
+
+def test_homepage_reload_renders_unresolved_submission_without_observations(
+    safe_page: Page,
+    browser_base_url: str,
+    browser_service: BrowserFakeService,
+    assert_clean_browser: Callable[[], None],
+) -> None:
+    from playwright.sync_api import expect
+
+    browser_service.queue_intents = [
+        QueueIntentSummary(
+            intent_id="intent-1",
+            merchant_key="sawayaka",
+            merchant_name="炭焼きレストラン さわやか",
+            shop_id=3272,
+            shop_name="浜松テスト店",
+            submitted_at=datetime(2026, 9, 14, 8, 30, tzinfo=UTC),
+            official_minutes_at_submission=25,
+            official_is_more_at_submission=False,
+            adult_count=2,
+            child_count=0,
+            source="manual",
+            status="unresolved",
+            error_code="send_outcome_unknown",
+        )
+    ]
+
+    safe_page.goto(browser_base_url)
+    safe_page.reload()
+
+    queue_band = safe_page.get_by_role("region", name="あなたの順番待ち")
+    expect(queue_band.get_by_text("炭焼きレストラン さわやか・浜松テスト店")).to_be_visible()
+    expect(
+        queue_band.get_by_text(re.compile("受付結果を確認できません.*更新 17:30"))
+    ).to_be_visible()
     assert_clean_browser()
 
 
@@ -306,6 +344,32 @@ def test_joins_and_cancels_a_synthetic_queue(
     expect(cancel_dialog).to_be_hidden()
     expect(safe_page.get_by_text("現在の順番待ちはありません", exact=True)).to_be_visible()
     expect(safe_page.get_by_role("button", name="今すぐ受付")).to_be_enabled()
+    assert_clean_browser()
+
+
+def test_zero_count_create_remains_called_when_followup_queue_read_fails(
+    safe_page: Page,
+    browser_base_url: str,
+    browser_service: BrowserFakeService,
+    assert_clean_browser: Callable[[], None],
+) -> None:
+    from playwright.sync_api import expect
+
+    browser_service.create_count = 0
+    open_sawayaka_console(safe_page, browser_base_url)
+
+    def fail_followup_queue_read(route: Route) -> None:
+        route.fulfill(status=200, content_type="application/json", body="not-json")
+
+    safe_page.route("**/api/queues", fail_followup_queue_read)
+    safe_page.get_by_role("button", name="今すぐ受付").click()
+    join_dialog = wait_for_dialog_ready(safe_page, "浜松テスト店", "#join-form")
+    join_dialog.get_by_role("button", name="この内容で順番待ちを申し込む").click()
+
+    expect(join_dialog).to_be_hidden()
+    queue_band = safe_page.get_by_role("region", name="現在の順番待ち")
+    expect(queue_band.get_by_text("呼び出し済み", exact=True)).to_be_visible()
+    expect(queue_band.get_by_role("button", name="取消")).to_have_count(0)
     assert_clean_browser()
 
 
