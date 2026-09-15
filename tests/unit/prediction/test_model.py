@@ -1,3 +1,4 @@
+import math
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -81,6 +82,41 @@ def test_shop_and_tokyo_daypart_quantiles_shrink_toward_parent() -> None:
     assert result.fast_minutes == 94
     assert result.typical_minutes == 94
     assert result.confidence == "medium"
+
+
+def test_tokyo_day_class_and_three_hour_bucket_select_only_matching_samples() -> None:
+    local = [sample(2.0) for _ in range(5)]
+    other_bucket = sample(4.0, at=NOW - timedelta(hours=3))
+    weekend_same_bucket = sample(6.0, at=NOW - timedelta(days=1))
+    merchant_parent = [sample(1.0, shop_id=2) for _ in range(10)]
+
+    result = predict(
+        "merchant",
+        1,
+        60,
+        NOW,
+        [*merchant_parent, *local, other_bucket, weekend_same_bucket],
+    )
+
+    assert result is not None
+    assert result.level == "shop_daypart"
+    assert result.effective_samples == pytest.approx(5)
+    assert result.fast_minutes == 97
+    assert result.typical_minutes == 97
+
+
+def test_shop_samples_outside_tokyo_daypart_fall_back_to_shop_level() -> None:
+    samples = [sample(1.0, shop_id=2) for _ in range(10)] + [
+        sample(2.0, at=NOW - timedelta(hours=3)) for _ in range(5)
+    ]
+
+    result = predict("merchant", 1, 60, NOW, samples)
+
+    assert result is not None
+    assert result.level == "shop"
+    assert result.effective_samples == pytest.approx(5 * math.exp2(-0.125 / 30))
+    assert result.fast_minutes == 80
+    assert result.typical_minutes == 80
 
 
 @pytest.mark.parametrize(("count", "confidence"), [(4, "low"), (5, "medium"), (20, "high")])

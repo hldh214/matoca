@@ -22,12 +22,13 @@ class PredictionRepository:
                      AND official_is_more_at_submission = 0
                      AND submitted_at <= ?
                      AND called_at <= ?
-                     AND (called_at >= submitted_at OR (
-                         substr(called_at, 1, 16) = substr(submitted_at, 1, 16) AND EXISTS (
+                     AND EXISTS (
                          SELECT 1 FROM queue_session_observations o
                          WHERE o.session_id=queue_sessions.session_id AND o.count=0
                            AND o.observed_minute=queue_sessions.called_at
-                     )))""",
+                     )
+                     AND (called_at >= submitted_at OR
+                          substr(called_at, 1, 16) = substr(submitted_at, 1, 16))""",
                 (merchant_key, at.isoformat(), at.isoformat()),
             ).fetchall()
             return [
