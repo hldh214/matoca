@@ -16,6 +16,11 @@ export class JoinForm {
     this.loading = false;
     this.submitting = false;
     this.revision = 0;
+    this.automatic = false;
+    this.arrival = document.querySelector("#arrival-at");
+    this.consent = document.querySelector("#automation-consent");
+    this.arrival.addEventListener("input", () => this.sync());
+    this.consent.addEventListener("change", () => this.sync());
     this.dialog.addEventListener("close", () => { this.revision++; });
     this.form.addEventListener("submit", (event) => { event.preventDefault(); return this.submit(); });
     this.form.querySelectorAll("[data-step]").forEach((button) => {
@@ -32,8 +37,17 @@ export class JoinForm {
     return Math.max(this.limits[`min_${type}`], Math.min(this.limits[`max_${type}`], count));
   }
 
-  async open(shop) {
-    if (this.submitting || shop.can_join !== true || !this.queue.canJoin) return;
+  async open(shop, automatic = false) {
+    if (this.submitting || (automatic ? shop.stale : shop.can_join !== true || !this.queue.canJoin)) return;
+    this.automatic = automatic;
+    this.document.querySelector("#automation-fields").hidden = !automatic;
+    this.arrival.required = automatic;
+    this.consent.required = automatic;
+    this.consent.checked = false;
+    this.arrival.value = "";
+    this.document.querySelector("#early-tolerance").value = "15";
+    this.document.querySelector("#model-error").value = "15";
+    this.form.querySelector('[type="submit"]').textContent = automatic ? "自動受付を有効にする" : "この内容で順番待ちを申し込む";
     const revision = ++this.revision;
     this.selected = shop;
     this.limits = null;
@@ -53,6 +67,9 @@ export class JoinForm {
       this.document.querySelector("#join-shop-name").textContent = detail.sub_name || detail.name;
       this.document.querySelector("#join-status").textContent = `${detail.current_waiting ?? "—"}組待ち・公式目安 ${officialEstimate(detail.waiting_time?.minutes, detail.waiting_time?.is_more)}`;
       this.configure(detail.forms, defaults);
+      if (automatic && shop.prediction) {
+        this.document.querySelector("#join-status").textContent += `・予測 ${shop.prediction.fast_minutes}〜${shop.prediction.typical_minutes}分`;
+      }
     } catch (error) {
       if (revision !== this.revision) return;
       this.error.textContent = error.detail || "受付に必要な情報を取得できませんでした";
@@ -131,6 +148,12 @@ export class JoinForm {
 
   answersReady() { return this.choices.every(({select, values}) => values.includes(select.value)); }
 
+  ready() {
+    if (!this.automatic) return this.selected?.can_join === true && this.queue.canJoin;
+    return !this.selected?.stale && this.consent.checked && Number.isFinite(new Date(this.arrival.value).getTime())
+      && new Date(this.arrival.value).getTime() > Date.now();
+  }
+
   updateCatalog(shops) {
     if (this.selected) this.selected = shops.find((shop) => shop.id === this.selected.id)
       || {...this.selected, can_join: false};
@@ -147,14 +170,14 @@ export class JoinForm {
     });
     for (const {select} of this.choices) select.disabled = busy;
     this.form.querySelector('[type="submit"]').disabled = busy || this.blocked || !this.answersReady()
-      || this.selected?.can_join !== true || !this.queue.canJoin;
+      || !this.ready();
   }
 
   async submit() {
     if (!this.dialog.open || this.loading || this.submitting || this.blocked || !this.answersReady()
-      || this.selected?.can_join !== true || !this.queue.canJoin) return;
+      || !this.ready()) return;
     this.submitting = true;
-    this.queue.beginMutation();
+    if (!this.automatic) this.queue.beginMutation();
     this.error.textContent = "";
     this.sync();
     const body = {shop_id: this.selected.id, adult_count: this.counts.adult, child_count: this.counts.child,
@@ -162,6 +185,14 @@ export class JoinForm {
     for (const {select, answer} of this.choices) body[`answer${answer}`] = Number(select.value);
     let succeeded = false;
     try {
+      if (this.automatic) {
+        await this.api.createAutomation({...body, arrival_at: new Date(this.arrival.value).toISOString(),
+          timezone: this.api.timezone, consent: true,
+          early_tolerance_minutes: Number(this.document.querySelector("#early-tolerance").value),
+          model_error_minutes: Number(this.document.querySelector("#model-error").value)});
+        this.dialog.close();
+        succeeded = true;
+      } else {
       const item = await this.api.createWaiting(body);
       const observedAt = new Date().toISOString();
       const called = item.count === 0;
@@ -179,8 +210,9 @@ export class JoinForm {
       }]);
       this.dialog.close();
       succeeded = true;
+      }
     } catch (error) {
-      this.queue.finishMutation();
+      if (!this.automatic) this.queue.finishMutation();
       this.error.textContent = error.detail || "順番待ちの申し込みに失敗しました";
     } finally {
       this.submitting = false;

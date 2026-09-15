@@ -210,7 +210,7 @@ def test_saved_settings_apply_to_the_next_join_dialog(
     join_dialog.get_by_role("button", name="閉じる").click()
     expect(join_dialog).to_be_hidden()
 
-    safe_page.get_by_role("button", name="設定").click()
+    safe_page.get_by_role("button", name="設定", exact=True).click()
     settings_dialog = wait_for_dialog_ready(safe_page, "設定", "#settings-form")
     settings_dialog.get_by_role("button", name="大人を増やす").click()
     settings_dialog.get_by_role("button", name="子どもを増やす").click()

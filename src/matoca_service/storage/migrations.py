@@ -238,6 +238,17 @@ def _create_queue_tracking(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _create_automation(connection: sqlite3.Connection) -> None:
+    connection.execute("""CREATE TABLE automation_tasks (
+        id TEXT PRIMARY KEY, merchant_key TEXT NOT NULL, payload TEXT NOT NULL,
+        form_signature TEXT NOT NULL, state TEXT NOT NULL, version INTEGER NOT NULL,
+        intent_id TEXT UNIQUE REFERENCES queue_intents(intent_id), last_decision TEXT NOT NULL,
+        evaluated_at TEXT, next_evaluation_at TEXT)""")
+    connection.execute("""CREATE TABLE automation_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL REFERENCES automation_tasks(id),
+        at TEXT NOT NULL, state TEXT NOT NULL, decision TEXT NOT NULL)""")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _bootstrap_metadata,
     _create_business_storage,
@@ -246,6 +257,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _create_catalog_state,
     _create_shop_favorites,
     _create_queue_tracking,
+    _create_automation,
 )
 
 

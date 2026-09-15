@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -13,6 +13,10 @@ from pydantic_core import PydanticCustomError
 
 from matoca_service.analytics.models import FavoriteState, ShopHistory
 from matoca_service.analytics.repository import AnalyticsRepository
+from matoca_service.automation.coordinator import AutomationCoordinator
+from matoca_service.automation.models import AutomationRequest, AutomationTask
+from matoca_service.automation.repository import AutomationRepository
+from matoca_service.automation.runner import AutomationRunner
 from matoca_service.collection.coordinator import CollectionCoordinator
 from matoca_service.collection.models import CollectedShop, CollectionCycle, CollectionRateLimited
 from matoca_service.collection.schedule import PollSchedule
@@ -234,6 +238,7 @@ class MatocaService:
         self._preferences = PreferenceRepository(self._database)
         self._analytics = AnalyticsRepository(self._database)
         self._queues = QueueRepository(self._database)
+        self._automation = AutomationRepository(self._database)
         self._predictions = PredictionService(PredictionRepository(self._database))
         self._collector = CollectionService(self, self._shops)
         self._poll_schedule = PollSchedule(self._shops)
@@ -242,8 +247,11 @@ class MatocaService:
             self._collector,
             self._poll_schedule,
             self._shops,
+            has_active_task=self._automation.has_active_task,
         )
         self._operation_lock = asyncio.Lock()
+        self._automation_runner = AutomationRunner(self, self._automation)
+        self.automation_coordinator = AutomationCoordinator(self._automation_runner)
         self._tracking_coordinator = QueueTrackingCoordinator(
             list(self._registry.merchants), self, self._queues, reader_persists=True
         )
@@ -626,10 +634,55 @@ class MatocaService:
         async with self._operation_lock:
             return await self._create_waiting_unlocked(merchant_key, submission)
 
+    async def automation_tasks(self) -> list[AutomationTask]:
+        return await run_storage(self._automation.list_tasks)
+
+    async def create_automation_task(self, request: AutomationRequest) -> AutomationTask:
+        task = await self._automation_runner.create(request)
+        self.automation_coordinator.wake()
+        return task
+
+    async def cancel_automation_task(self, task_id: str) -> AutomationTask:
+        return await self._automation_runner.cancel(task_id)
+
+    async def resolve_automation_task(self, task_id: str) -> AutomationTask:
+        return await self._automation_runner.resolve(task_id)
+
+    async def resolve_manual_intent(self, intent_id: str) -> None:
+        async with self._operation_lock:
+            intents = await run_storage(self._queues.list_unfinished_intents)
+            intent = next((item for item in intents if item.intent_id == intent_id), None)
+            tasks = await run_storage(self._automation.list_tasks)
+            if (
+                intent is None
+                or intent.source != "manual"
+                or any(task.intent_id == intent_id for task in tasks)
+            ):
+                raise QueueUnavailableError("この受付は自動受付の状態から確認してください")
+            await self._check_account_waiting_unlocked()
+            await run_storage(self._queues.mark_intent_failed, intent_id, "user_confirmed_absent")
+
+    async def _check_account_waiting_unlocked(self, *, exclude: str | None = None) -> None:
+        for key in self._registry.merchants:
+            if key == exclude:
+                continue
+            waiting = await self._authenticated_read(key, lambda client: client.list_waiting())
+            await run_storage(self._queues.record_waiting, key, datetime.now(UTC), waiting)
+            if waiting:
+                raise QueueUnavailableError("すでに受付中の順番待ちがあります")
+
     async def _create_waiting_unlocked(
-        self, merchant_key: str, submission: QueueSubmission
+        self,
+        merchant_key: str,
+        submission: QueueSubmission,
+        *,
+        before_send: Callable[[Shop], Awaitable[None]] | None = None,
+        authorize_send: Callable[[], None] | None = None,
+        persist_intent: Callable[[QueueIntent], None] | None = None,
+        source: Literal["manual", "automation"] = "manual",
     ) -> Waiting:
         merchant = self._merchant(merchant_key)
+        await self._check_account_waiting_unlocked(exclude=merchant_key)
         lat, lng = await run_storage(
             self._stored_shop_coordinates,
             merchant_key,
@@ -667,6 +720,8 @@ class MatocaService:
                 client, shop, waiting = await prepare(force_liff=True)
 
             validate_queue_submission(shop, submission, waiting)
+            if before_send is not None:
+                await before_send(shop)
             assert shop.lat is not None and shop.lng is not None
             request = CreateWaitingRequest(
                 shop_id=str(shop.id),
@@ -691,13 +746,22 @@ class MatocaService:
                 ),
                 adult_count=submission.adult_count,
                 child_count=submission.child_count,
+                source=source,
             )
             try:
-                await run_storage(self._queues.begin_intent, intent)
+                await run_storage(persist_intent or self._queues.begin_intent, intent)
             except sqlite3.IntegrityError as error:
                 raise QueueUnavailableError(
                     "受付結果を確認中です。現在の受付を確認してから操作してください"
                 ) from error
+            if authorize_send is not None:
+                try:
+                    authorize_send()
+                except Exception:
+                    await run_storage(
+                        self._queues.mark_intent_failed, intent.intent_id, "pre_send_check_failed"
+                    )
+                    raise
             try:
                 created = await client.create_waiting(request)
             except MatocaApiError as error:

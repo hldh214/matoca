@@ -18,10 +18,9 @@ def test_initialize_creates_private_database_and_schema(tmp_path: Path) -> None:
 
     assert stat.S_IMODE(database.path.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(database.path.stat().st_mode) == 0o600
-    assert (
-        database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 7
-    )
+    assert database.read(
+        lambda connection: connection.execute("PRAGMA user_version").fetchone()[0]
+    ) == len(MIGRATIONS)
 
 
 def test_initialize_is_idempotent(tmp_path: Path) -> None:
@@ -83,7 +82,7 @@ def test_business_migration_rolls_back_schema_and_version_after_ddl_failure(tmp_
         connection.set_authorizer(None)
         migrate(connection)
 
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == len(MIGRATIONS)
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'shops'"
         ).fetchone() == ("shops",)
@@ -155,10 +154,9 @@ def test_initialize_upgrades_exact_pre_fix_version_two_database(tmp_path: Path) 
     database = Database(path)
     database.initialize()
 
-    assert (
-        database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 7
-    )
+    assert database.read(
+        lambda connection: connection.execute("PRAGMA user_version").fetchone()[0]
+    ) == len(MIGRATIONS)
     column = database.read(
         lambda connection: connection.execute(
             "SELECT dflt_value FROM pragma_table_info('merchant_poll_state') "
@@ -185,10 +183,9 @@ def test_initialize_upgrades_exact_version_three_database(tmp_path: Path) -> Non
     database = Database(path)
     database.initialize()
 
-    assert (
-        database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 7
-    )
+    assert database.read(
+        lambda connection: connection.execute("PRAGMA user_version").fetchone()[0]
+    ) == len(MIGRATIONS)
     assert database.read(
         lambda connection: connection.execute(
             "SELECT name FROM sqlite_master "
@@ -216,10 +213,9 @@ def test_additive_catalog_upgrade_preserves_legacy_data(tmp_path: Path, version:
             connection.execute("INSERT INTO preferences VALUES (1, 3, 1, 10, 20)")
     database = Database(path)
     database.initialize()
-    assert (
-        database.read(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
-        == 7
-    )
+    assert database.read(
+        lambda connection: connection.execute("PRAGMA user_version").fetchone()[0]
+    ) == len(MIGRATIONS)
     assert database.read(
         lambda connection: connection.execute(
             "SELECT value FROM database_metadata WHERE key = 'synthetic'"

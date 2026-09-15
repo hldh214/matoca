@@ -53,6 +53,11 @@ export class MatocaApi {
   shopDetail(id) { return this.request(`/api/shops/${encodeURIComponent(id)}?merchant=${this.merchantKey}`); }
   createWaiting(body) { return this.request(`${this.base}/waiting`, "POST", body); }
   cancelWaiting(id) { return this.request(`${this.base}/waiting/${encodeURIComponent(id)}`, "DELETE"); }
+  automationTasks() { return this.request("/api/automation/tasks"); }
+  createAutomation(body) { return this.request("/api/automation/tasks", "POST", {...body, merchant_key: decodeURIComponent(this.merchantKey)}); }
+  cancelAutomation(id) { return this.request(`/api/automation/tasks/${encodeURIComponent(id)}`, "DELETE"); }
+  resolveAutomation(id) { return this.request(`/api/automation/tasks/${encodeURIComponent(id)}/resolve`, "POST", {confirm_no_queue: true}); }
+  resolveManualIntent(id) { return this.request(`/api/queues/intents/${encodeURIComponent(id)}/resolve`, "POST", {confirm_no_queue: true}); }
   preferences() { return this.request("/api/preferences"); }
   savePreferences(body) { return this.request("/api/preferences", "PUT", body); }
   refresh() { return this.request(`${this.base}/refresh`, "POST"); }

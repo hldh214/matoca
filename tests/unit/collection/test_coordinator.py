@@ -127,6 +127,59 @@ async def test_run_once_does_not_start_second_cycle_for_busy_merchant() -> None:
 
 
 @pytest.mark.asyncio
+async def test_enabling_task_wakes_long_deadline_and_reads_active_state_off_loop() -> None:
+    collector = SuccessfulCollector()
+    repository = MemoryRepository()
+    active = False
+    loop_thread = threading.get_ident()
+
+    def has_active_task(merchant_key: str) -> bool:
+        assert threading.get_ident() != loop_thread
+        return active
+
+    coordinator = CollectionCoordinator(
+        registry(),
+        collector,
+        PollSchedule(repository),
+        repository,
+        now=lambda: NOW,
+        has_active_task=has_active_task,
+    )
+    await coordinator.run_once()
+    assert coordinator._next_due["sawayaka"] == NOW + timedelta(minutes=5)
+    active = True
+    coordinator.wake("sawayaka")
+    await asyncio.wait_for(coordinator._wait_until_next_due(), 0.1)
+    await coordinator.run_once()
+    assert coordinator._next_due["sawayaka"] == NOW + timedelta(minutes=1)
+
+
+@pytest.mark.asyncio
+async def test_enable_while_old_interval_is_computing_keeps_minute_deadline() -> None:
+    collector = SuccessfulCollector()
+    repository = MemoryRepository()
+    started, release = threading.Event(), threading.Event()
+    schedule = PollSchedule(repository)
+    original = schedule.next_interval
+
+    def delayed(*args):
+        started.set()
+        assert release.wait(2)
+        return original(*args)
+
+    schedule.next_interval = delayed
+    coordinator = CollectionCoordinator(
+        registry(), collector, schedule, repository, now=lambda: NOW
+    )
+    running = asyncio.create_task(coordinator.run_once())
+    await asyncio.to_thread(started.wait, 1)
+    coordinator.wake("sawayaka")
+    release.set()
+    await running
+    assert coordinator._next_due["sawayaka"] <= NOW + timedelta(minutes=1)
+
+
+@pytest.mark.asyncio
 async def test_stop_cancels_and_drains_a_blocked_collection() -> None:
     collector = BlockingCollector()
     coordinator = coordinator_for(collector, MemoryRepository())

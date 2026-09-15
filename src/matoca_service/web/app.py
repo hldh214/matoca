@@ -15,6 +15,8 @@ from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from matoca_service.analytics.models import FavoriteState, FavoriteUpdate, ShopHistory
+from matoca_service.automation.models import AutomationRequest, AutomationTask
+from matoca_service.automation.repository import TaskConflictError
 from matoca_service.config import RuntimeSettings
 from matoca_service.console import MerchantConsoleData
 from matoca_service.matoca.models import Shop, Waiting
@@ -104,6 +106,14 @@ class AnalyticsService(Protocol):
     ) -> FavoriteState: ...
 
 
+class AutomationService(Protocol):
+    async def automation_tasks(self) -> list[AutomationTask]: ...
+    async def create_automation_task(self, request: AutomationRequest) -> AutomationTask: ...
+    async def cancel_automation_task(self, task_id: str) -> AutomationTask: ...
+    async def resolve_automation_task(self, task_id: str) -> AutomationTask: ...
+    async def resolve_manual_intent(self, intent_id: str) -> None: ...
+
+
 def create_app(
     service: DashboardService | None = None,
     *,
@@ -124,6 +134,7 @@ def create_app(
         dashboard_service = service
         coordinator = collection_coordinator
     analytics = analytics_service or cast(AnalyticsService, dashboard_service)
+    automation = cast(AutomationService, dashboard_service)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -137,9 +148,18 @@ def create_app(
         )
         if tracking is not None:
             tracking.start()
+        automatic = (
+            dashboard_service.automation_coordinator
+            if isinstance(dashboard_service, MatocaService)
+            else None
+        )
+        if automatic is not None:
+            automatic.start()
         try:
             yield
         finally:
+            if automatic is not None:
+                await automatic.stop()
             if tracking is not None:
                 await tracking.stop()
             if coordinator is not None:
@@ -148,6 +168,60 @@ def create_app(
     app = FastAPI(title="Matoca", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=WEB_ROOT / "static"), name="static")
     templates = Jinja2Templates(directory=WEB_ROOT / "templates")
+
+    @app.exception_handler(TaskConflictError)
+    async def task_conflict_handler(request: Request, error: TaskConflictError) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(error)})
+
+    @app.get("/api/automation/tasks", response_model=list[AutomationTask])
+    async def automation_tasks_api() -> list[AutomationTask]:
+        return await automation.automation_tasks()
+
+    @app.post("/api/automation/tasks", response_model=AutomationTask, status_code=201)
+    async def create_automation_api(request: Request) -> AutomationTask | JSONResponse:
+        require_same_origin(request)
+        try:
+            payload = AutomationRequest.model_validate(await request.json())
+        except JSONDecodeError, UnicodeDecodeError, ValidationError:
+            return JSONResponse(
+                status_code=422, content={"detail": "到着予定・人数・同意内容を確認してください"}
+            )
+        return await automation.create_automation_task(payload)
+
+    @app.delete("/api/automation/tasks/{task_id}", response_model=AutomationTask)
+    async def cancel_automation_api(task_id: str, request: Request) -> AutomationTask:
+        require_same_origin(request)
+        try:
+            return await automation.cancel_automation_task(task_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail="自動受付が見つかりません") from error
+
+    @app.post("/api/automation/tasks/{task_id}/resolve", response_model=AutomationTask)
+    async def resolve_automation_api(task_id: str, request: Request) -> AutomationTask:
+        require_same_origin(request)
+        await require_absence_confirmation(request)
+        try:
+            return await automation.resolve_automation_task(task_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail="自動受付が見つかりません") from error
+
+    async def require_absence_confirmation(request: Request) -> None:
+        try:
+            payload = await request.json()
+        except JSONDecodeError, UnicodeDecodeError:
+            raise HTTPException(status_code=422, detail="確認内容が正しくありません") from None
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"confirm_no_queue"}
+            or payload["confirm_no_queue"] is not True
+        ):
+            raise HTTPException(status_code=422, detail="受付がないことを確認してください")
+
+    @app.post("/api/queues/intents/{intent_id}/resolve", status_code=204)
+    async def resolve_manual_intent_api(intent_id: str, request: Request) -> None:
+        require_same_origin(request)
+        await require_absence_confirmation(request)
+        await automation.resolve_manual_intent(intent_id)
 
     @app.exception_handler(UnknownMerchantError)
     async def unknown_merchant_handler(

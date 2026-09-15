@@ -7,6 +7,7 @@ from matoca_service.analytics.models import (
     ShopHistory,
     ShopIdentity,
 )
+from matoca_service.automation.models import AutomationRequest, AutomationTask
 from matoca_service.console import MerchantConsoleData, MerchantSummary, ShopConsoleItem
 from matoca_service.matoca.models import Shop, ShopForms, Waiting
 from matoca_service.prediction.models import Prediction
@@ -26,6 +27,8 @@ class BrowserFakeService:
     def __init__(self) -> None:
         self.preferences = PartyPreferences(default_adult_count=2, default_child_count=0)
         self.submissions: list[QueueSubmission] = []
+        self.automation_requests: list[AutomationRequest] = []
+        self._automation_tasks: list[AutomationTask] = []
         self.refresh_calls = 0
         self.console_reads = 0
         self.waiting_reads = 0
@@ -119,6 +122,35 @@ class BrowserFakeService:
         # Live detail is deliberately stricter than cached list limits and the
         # global settings range (0..20), so the workflow must use the detail API.
         self._console_shops[0].forms = ShopForms(min_adult=1, max_adult=6, min_child=0, max_child=4)
+
+    async def automation_tasks(self) -> list[AutomationTask]:
+        return self._automation_tasks
+
+    async def create_automation_task(self, request: AutomationRequest) -> AutomationTask:
+        self.automation_requests.append(request)
+        task = AutomationTask(
+            **request.model_dump(),
+            id=str(len(self.automation_requests)),
+            shop_name="浜松テスト店",
+            created_at=FIXED_NOW,
+            form_signature="synthetic",
+            next_evaluation_at=FIXED_NOW,
+        )
+        self._automation_tasks.append(task)
+        return task
+
+    async def cancel_automation_task(self, task_id: str) -> AutomationTask:
+        task = next(item for item in self._automation_tasks if item.id == task_id)
+        task.state = "cancelled"
+        task.last_decision = "監視を取り消しました"
+        task.next_evaluation_at = None
+        return task
+
+    async def resolve_automation_task(self, task_id: str) -> AutomationTask:
+        return await self.cancel_automation_task(task_id)
+
+    async def resolve_manual_intent(self, intent_id: str) -> None:
+        self.queue_intents = [item for item in self.queue_intents if item.intent_id != intent_id]
 
     @staticmethod
     def _console_item(

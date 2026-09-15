@@ -242,8 +242,6 @@ async def test_merchant_page_renders_japanese_shop_console_shell() -> None:
     assert "公式目安" in response.text
     assert "設定" in response.text
     assert "地域別" not in response.text
-    assert "自動" not in response.text
-    assert "予測" not in response.text
     assert response.text.count('class="dialog-close" type="button"') == 4
 
 

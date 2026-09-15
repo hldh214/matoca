@@ -13,6 +13,9 @@ export class QueueStatus {
     this.revision = 0;
     this.readError = false;
     this.form.addEventListener("submit", (event) => { event.preventDefault(); return this.cancel(); });
+    this.document.querySelector("#resolve-intent-consent").addEventListener("change", (event) => {
+      this.form.querySelector('[type="submit"]').disabled = this.busy || !event.target.checked;
+    });
   }
 
   get hasQueue() { return this.items.some((item) => ["active", "pending", "unresolved"].includes(item.status)); }
@@ -101,6 +104,11 @@ export class QueueStatus {
         cancel.type = "button";
         cancel.disabled = this.busy;
         cancel.addEventListener("click", () => {
+          delete this.dialog.dataset.intentId;
+          this.document.querySelector("#resolve-intent-confirmation").hidden = true;
+          this.document.querySelector("#cancel-title").textContent = "順番待ちを取り消しますか？";
+          this.form.querySelector('[type="submit"]').textContent = "順番待ちを取り消す";
+          this.form.querySelector('[type="submit"]').disabled = false;
           this.document.querySelector("#cancel-error").textContent = "";
           this.document.querySelector("#cancel-detail").textContent = `受付番号 ${item.number ?? item.id}`;
           this.dialog.dataset.waitingId = String(item.waiting_id);
@@ -110,6 +118,24 @@ export class QueueStatus {
       } else {
         const labels = {pending: "受付結果を確認中です", unresolved: "受付結果を確認できません。再申込せず確認してください", called: "呼び出し済み", cancelled: "取消済み", unknown: "結果を確認できません"};
         active.append(this.node("p", "queue-terminal-status", labels[item.status] || "受付終了"));
+        if (["pending", "unresolved"].includes(item.status) && item.source === "manual") {
+          const resolve = this.node("button", "text-button", "受付結果を確認して終了");
+          resolve.type = "button";
+          resolve.disabled = this.busy;
+          resolve.addEventListener("click", () => {
+            delete this.dialog.dataset.waitingId;
+            this.dialog.dataset.intentId = item.intent_id;
+            this.document.querySelector("#cancel-title").textContent = "受付結果の確認を終了しますか？";
+            this.document.querySelector("#cancel-detail").textContent = "すべての加盟店の受付状況を再確認します。順番待ちの再申込や取消は行いません。";
+            this.document.querySelector("#cancel-error").textContent = "";
+            this.document.querySelector("#resolve-intent-confirmation").hidden = false;
+            this.document.querySelector("#resolve-intent-consent").checked = false;
+            this.form.querySelector('[type="submit"]').textContent = "受付がないことを確認して終了";
+            this.form.querySelector('[type="submit"]').disabled = true;
+            this.dialog.showModal();
+          });
+          active.append(resolve);
+        }
       }
       this.target.append(active);
     }
@@ -119,15 +145,25 @@ export class QueueStatus {
 
   async cancel() {
     const id = this.dialog.dataset.waitingId;
-    if (!this.items.some((item) => String(item.waiting_id) === id) || !this.beginMutation()) return;
+    const intentId = this.dialog.dataset.intentId;
+    if (intentId) {
+      if (!this.document.querySelector("#resolve-intent-consent").checked
+        || !this.items.some((item) => item.intent_id === intentId && item.source === "manual")) return;
+    } else if (!this.items.some((item) => String(item.waiting_id) === id)) return;
+    if (!this.beginMutation()) return;
     const errorTarget = this.document.querySelector("#cancel-error");
     errorTarget.textContent = "";
     this.form.setAttribute("aria-busy", "true");
     this.form.querySelector('[type="submit"]').disabled = true;
     let succeeded = false;
     try {
-      await this.api.cancelWaiting(id);
-      this.finishMutation(this.items.filter((item) => String(item.waiting_id) !== id));
+      if (intentId) {
+        await this.api.resolveManualIntent(intentId);
+        this.finishMutation(this.items.filter((item) => item.intent_id !== intentId));
+      } else {
+        await this.api.cancelWaiting(id);
+        this.finishMutation(this.items.filter((item) => String(item.waiting_id) !== id));
+      }
       this.dialog.close();
       succeeded = true;
     } catch (error) {

@@ -11,12 +11,13 @@ function predictionEstimate(prediction) {
 }
 
 export class ShopList {
-  constructor(document, onJoin, onFavorite, onHistory) {
+  constructor(document, onJoin, onFavorite, onHistory, onAutomation) {
     this.document = document;
     this.target = document.querySelector("#shop-list");
     this.onJoin = onJoin;
     this.onFavorite = onFavorite;
     this.onHistory = onHistory;
+    this.onAutomation = onAutomation;
   }
 
   node(tag, className, text) {
@@ -90,7 +91,13 @@ export class ShopList {
       history.type = "button";
       history.addEventListener("click", () => this.onHistory(shop));
       tools.append(favorite, history);
-      row.append(identity, status, waiting, estimate, tools, action);
+      const actions = this.node("div", "shop-actions");
+      const automatic = this.node("button", "automation-button", "自動受付を設定");
+      automatic.type = "button";
+      automatic.disabled = shop.stale;
+      automatic.addEventListener("click", () => this.onAutomation(shop));
+      actions.append(action, automatic);
+      row.append(identity, status, waiting, estimate, tools, actions);
       this.target.append(row);
     }
   }

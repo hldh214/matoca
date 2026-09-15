@@ -168,12 +168,13 @@ def test_console_geometry_across_supported_viewports(
     assert_no_overlap(box(toolbar), box(first_row))
     assert_no_overlap(box(counts), box(first_row))
     first_action = first_row.locator(".join-button")
-    for content in first_row.locator(":scope > :not(.join-button)").all():
+    for content in first_row.locator(":scope > :not(.shop-actions)").all():
         assert_no_overlap(box(content), box(first_action))
+    assert_no_overlap(box(first_row.locator(".automation-button")), box(first_action))
 
     empty_queue_height = box(queue_band).height
 
-    safe_page.get_by_role("button", name="設定").click()
+    safe_page.get_by_role("button", name="設定", exact=True).click()
     settings_dialog = safe_page.get_by_role("dialog", name="設定")
     expect(settings_dialog.locator("#settings-form")).to_have_attribute("aria-busy", "false")
     assert_dialog_reachable(settings_dialog, safe_page)

@@ -68,8 +68,10 @@ class CollectionCoordinator:
         self._now = now
         self._has_active_task = has_active_task
         self._stop_event = asyncio.Event()
+        self._wake_event = asyncio.Event()
         self._in_flight: dict[str, asyncio.Task[None]] = {}
         self._next_due: dict[str, datetime] = {}
+        self._wake_versions: dict[str, int] = {}
         self._task: asyncio.Task[None] | None = None
         self._last_maintenance_day: date | None = None
         self._maintenance_lock = asyncio.Lock()
@@ -85,6 +87,11 @@ class CollectionCoordinator:
             self._stop_event.clear()
             self._shutdown_task = None
             self._task = asyncio.create_task(self.run())
+
+    def wake(self, merchant_key: str) -> None:
+        self._wake_versions[merchant_key] = self._wake_versions.get(merchant_key, 0) + 1
+        self._next_due[merchant_key] = self._now()
+        self._wake_event.set()
 
     async def run_once(self) -> None:
         now = self._now()
@@ -146,6 +153,7 @@ class CollectionCoordinator:
 
     async def stop(self) -> None:
         self._stop_event.set()
+        self._wake_event.set()
         if self._shutdown_task is None:
             self._shutdown_task = asyncio.create_task(self._stop_and_drain())
         cancelled = False
@@ -176,6 +184,7 @@ class CollectionCoordinator:
     async def _collect_merchant(
         self, merchant_key: str, now: datetime, *, force: bool = False
     ) -> None:
+        wake_version = self._wake_versions.get(merchant_key, 0)
         try:
             if self._storage_retry_at is not None and now < self._storage_retry_at:
                 return
@@ -225,12 +234,17 @@ class CollectionCoordinator:
                         failure_count=0,
                     ),
                 )
+                active = await run_storage(self._has_active_task, merchant_key)
                 self._next_due[merchant_key] = self._now() + await run_storage(
                     self._schedule.next_interval,
                     merchant_key,
                     self._now(),
-                    self._has_active_task(merchant_key),
+                    active,
                 )
+                if self._wake_versions.get(merchant_key, 0) != wake_version:
+                    self._next_due[merchant_key] = min(
+                        self._next_due[merchant_key], self._now() + timedelta(minutes=1)
+                    )
             self._completed_at[merchant_key] = self._now()
         except sqlite3.Error, OSError:
             self._storage_failed(self._now())
@@ -262,7 +276,8 @@ class CollectionCoordinator:
 
     async def _wait(self, timeout: float) -> None:
         with suppress(TimeoutError):
-            await asyncio.wait_for(self._stop_event.wait(), timeout=timeout)
+            await asyncio.wait_for(self._wake_event.wait(), timeout=timeout)
+        self._wake_event.clear()
 
     def _discard_completed_task(self, merchant_key: str, task: asyncio.Task[None]) -> None:
         if self._in_flight.get(merchant_key) is task:

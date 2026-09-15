@@ -1,4 +1,5 @@
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -31,9 +32,14 @@ class QueueRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
 
-    def begin_intent(self, intent: QueueIntent) -> None:
-        self._database.write(
-            lambda connection: connection.execute(
+    def begin_intent(
+        self,
+        intent: QueueIntent,
+        *,
+        on_begin: Callable[[sqlite3.Connection], None] | None = None,
+    ) -> None:
+        def write(connection: sqlite3.Connection) -> None:
+            connection.execute(
                 """INSERT INTO queue_intents
                (intent_id, merchant_key, shop_id, submitted_at,
                 official_minutes_at_submission, official_is_more_at_submission,
@@ -51,7 +57,10 @@ class QueueRepository:
                     intent.source,
                 ),
             )
-        )
+            if on_begin is not None:
+                on_begin(connection)
+
+        self._database.write(write)
 
     def mark_intent_unresolved(self, intent_id: str, error_code: str) -> None:
         self._database.write(

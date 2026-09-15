@@ -25,6 +25,10 @@
         </div>
         <div id="current-queue" class="queue-content" aria-live="polite">順番待ちを確認中です</div>
       </section>
+      <section class="automation-panel" aria-label="到着予定の自動受付">
+        <h2>到着予定の自動受付</h2>
+        <div id="automation-tasks" aria-live="polite">自動受付を確認中です</div>
+      </section>
       <section class="shop-console" aria-label="店舗一覧">
         <div class="toolbar">
           <div class="segmented" id="shop-filter" role="group" aria-label="店舗の絞り込み">
@@ -70,6 +74,15 @@
         <div class="counter-row"><span>大人</span><div class="stepper"><button type="button" data-step="adult" data-delta="-1" aria-label="大人を減らす">−</button><output id="adult-count">2</output><button type="button" data-step="adult" data-delta="1" aria-label="大人を増やす">＋</button></div></div>
         <div class="counter-row"><span>子ども</span><div class="stepper"><button type="button" data-step="child" data-delta="-1" aria-label="子どもを減らす">−</button><output id="child-count">0</output><button type="button" data-step="child" data-delta="1" aria-label="子どもを増やす">＋</button></div></div>
         <div id="confirm-items" class="confirm-items"></div>
+        <div id="automation-fields" class="automation-fields" hidden>
+          <label>到着予定日時<input id="arrival-at" type="datetime-local"></label>
+          <details><summary>予測の詳細設定</summary>
+            <label>早い呼び出しの許容時間（分）<input id="early-tolerance" type="number" min="0" max="120" value="15"></label>
+            <label>予測の誤差（分）<input id="model-error" type="number" min="0" max="120" value="15"></label>
+          </details>
+          <p>1分ごとに評価し、条件が整えば追加の確認なしで申し込みます。到着予定の2分後までに受付できなければ終了します。受付終了時刻は予測しません。</p>
+          <label class="consent-label"><input id="automation-consent" type="checkbox">条件が整ったら、追加の確認なしで順番待ちを申し込むことに同意します</label>
+        </div>
         <p id="join-error" class="form-error" role="alert"></p>
         <button type="submit" class="primary-button">この内容で順番待ちを申し込む</button>
       </form>
@@ -80,6 +93,7 @@
         <p class="dialog-kicker">確認</p>
         <h2 id="cancel-title">順番待ちを取り消しますか？</h2>
         <p id="cancel-detail" class="dialog-status"></p>
+        <label id="resolve-intent-confirmation" hidden><input id="resolve-intent-consent" type="checkbox">現在の受付がないことを確認しました。受付状況を再確認して終了します</label>
         <p id="cancel-error" class="form-error" role="alert"></p>
         <button type="submit" class="danger-button">順番待ちを取り消す</button>
       </form>
