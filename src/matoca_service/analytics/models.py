@@ -2,6 +2,8 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, StrictBool
 
+from matoca_service.prediction.models import Prediction
+
 
 class ShopIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -21,6 +23,7 @@ class HistoryObservation(BaseModel):
     official_waiting_minutes: int | None
     official_waiting_is_more: bool
     error_code: str | None
+    prediction: Prediction | None = None
 
 
 class ShopHistory(BaseModel):

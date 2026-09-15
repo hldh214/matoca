@@ -25,6 +25,9 @@ from matoca_service.line.refresh import LineRefreshClient
 from matoca_service.line.token_manager import TokenManager
 from matoca_service.matoca.client import MatocaApiError, MatocaClient
 from matoca_service.matoca.models import CreateWaitingRequest, Shop, ShopOptions, Waiting
+from matoca_service.prediction.model import remaining
+from matoca_service.prediction.models import Prediction
+from matoca_service.prediction.repository import PredictionRepository, PredictionService
 from matoca_service.state.store import JsonStateStore
 from matoca_service.storage.asyncio import run_storage
 from matoca_service.storage.database import Database
@@ -231,6 +234,7 @@ class MatocaService:
         self._preferences = PreferenceRepository(self._database)
         self._analytics = AnalyticsRepository(self._database)
         self._queues = QueueRepository(self._database)
+        self._predictions = PredictionService(PredictionRepository(self._database))
         self._collector = CollectionService(self, self._shops)
         self._poll_schedule = PollSchedule(self._shops)
         self._collection_coordinator = CollectionCoordinator(
@@ -322,9 +326,30 @@ class MatocaService:
         )
         return await run_storage(self._stored_console, merchant, merchant_key, now)
 
+    async def predict(
+        self, merchant_key: str, shop_id: int, official_minutes: int | None, at: datetime
+    ) -> Prediction | None:
+        self._merchant(merchant_key)
+        return await run_storage(
+            self._predictions.predict, merchant_key, shop_id, official_minutes, at
+        )
+
     async def shop_history(self, merchant_key: str, shop_id: int, day: date) -> ShopHistory:
         self._merchant(merchant_key)
-        return await run_storage(self._analytics.shop_history, merchant_key, shop_id, day)
+        history = await run_storage(self._analytics.shop_history, merchant_key, shop_id, day)
+        observations = []
+        for observation in history.observations:
+            prediction = None
+            if observation.error_code is None and not observation.official_waiting_is_more:
+                prediction = await run_storage(
+                    self._predictions.predict,
+                    merchant_key,
+                    shop_id,
+                    observation.official_waiting_minutes,
+                    observation.observed_at,
+                )
+            observations.append(observation.model_copy(update={"prediction": prediction}))
+        return history.model_copy(update={"observations": observations})
 
     async def favorites(self) -> dict[str, list[int]]:
         return await run_storage(self._analytics.favorites)
@@ -342,13 +367,34 @@ class MatocaService:
     ) -> MerchantConsoleData:
         stored_shops, catalog, poll_state = self._shops.snapshot(merchant_key)
         stale_after = self._poll_schedule.next_interval(merchant_key, now, False) * 2
-        return build_console(
+        console = build_console(
             merchant,
             stored_shops,
             catalog,
             poll_state,
             now,
             stale_after=stale_after,
+        )
+        return console.model_copy(
+            update={
+                "shops": [
+                    shop.model_copy(
+                        update={
+                            "prediction": self._predictions.predict(
+                                merchant_key,
+                                shop.id,
+                                (
+                                    shop.official_waiting_minutes
+                                    if not shop.official_waiting_is_more
+                                    else None
+                                ),
+                                shop.updated_at or now,
+                            )
+                        }
+                    )
+                    for shop in console.shops
+                ]
+            }
         )
 
     def _stored_snapshot(
@@ -430,6 +476,7 @@ class MatocaService:
             return waiting
 
     async def queues(self) -> list[QueueSession | QueueIntentSummary]:
+        now = datetime.now(tz=UTC)
         sessions = await run_storage(self._queues.list_sessions)
         intents = await run_storage(self._queues.list_unfinished_intents)
         merchants = {item.key: item.name for item in self.list_merchants()}
@@ -444,19 +491,40 @@ class MatocaService:
                         stored.shop.sub_name or stored.shop.name
                     )
                     break
-        enriched_sessions = [
-            session.model_copy(
-                update={
-                    "merchant_name": merchants.get(session.merchant_key),
-                    "shop_name": (
-                        shop_names.get((session.merchant_key, session.shop_id))
-                        if session.shop_id is not None
-                        else None
-                    ),
-                }
+        enriched_sessions = []
+        for session in sessions:
+            prediction = None
+            if (
+                session.status == "active"
+                and not session.stale
+                and session.shop_id is not None
+                and session.submitted_at is not None
+                and session.official_minutes_at_submission is not None
+                and session.official_is_more_at_submission is False
+            ):
+                total = await run_storage(
+                    self._predictions.predict,
+                    session.merchant_key,
+                    session.shop_id,
+                    session.official_minutes_at_submission,
+                    session.submitted_at,
+                )
+                prediction = (
+                    remaining(total, session.submitted_at, now) if total is not None else None
+                )
+            enriched_sessions.append(
+                session.model_copy(
+                    update={
+                        "merchant_name": merchants.get(session.merchant_key),
+                        "shop_name": (
+                            shop_names.get((session.merchant_key, session.shop_id))
+                            if session.shop_id is not None
+                            else None
+                        ),
+                        "prediction": prediction,
+                    }
+                )
             )
-            for session in sessions
-        ]
         enriched_intents = [
             intent.model_copy(
                 update={

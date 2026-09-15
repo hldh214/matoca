@@ -73,6 +73,8 @@
 .status-pill.available { color: #17653a; background: #e4f2e8; }
 .metric { color: #51554f; font-size: 13px; }
 .metric strong { display: block; color: #252725; font-size: 16px; }
+.metric-label { display: block; color: #6e726c; font-size: 10px; }
+.prediction-value { display: block; margin-top: 4px; color: #17653a; font-size: 10px; line-height: 1.35; }
 .join-button, .primary-button { border: 0; border-radius: 5px; color: #ffffff; background: #c93630; font-weight: 700; cursor: pointer; }
 .join-button { width: 140px; height: 42px; }
 .join-button:disabled { color: #858983; background: #e1e3de; cursor: not-allowed; }

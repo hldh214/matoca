@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from matoca_service.matoca.models import Shop, ShopForms
+from matoca_service.prediction.models import Prediction
 from matoca_service.storage.models import CatalogState, MerchantPollState, StoredShop
 
 ShopStatus = Literal["available", "closed", "holiday", "suspended", "stale"]
@@ -34,6 +35,7 @@ class ShopConsoleItem(BaseModel):
     stale: bool
     updated_at: datetime | None
     forms: ShopForms | None
+    prediction: Prediction | None = None
 
 
 class MerchantConsoleData(BaseModel):

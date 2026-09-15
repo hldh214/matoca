@@ -25,6 +25,14 @@ function render(queue) {
     name.textContent = `${item.merchant_name || item.merchant_key}・${item.shop_name || "受付中"}`;
     const status = document.createElement("span");
     status.textContent = `${statusText(item)}・受付番号 ${item.number ?? "—"}・前 ${latest?.count ?? "—"}組・更新 ${updatedAt ? time(updatedAt) : "—"}${item.stale ? "・更新待ち" : ""}`;
+    if (item.trajectory_minutes !== null && item.trajectory_minutes !== undefined) {
+      status.textContent += `・組数推移 約${item.trajectory_minutes}分`;
+    }
+    if (item.prediction) {
+      const confidence = {low: "低", medium: "中", high: "高"}[item.prediction.confidence];
+      status.textContent += `・残り予測 ${item.prediction.fast_minutes}〜${item.prediction.typical_minutes}分`;
+      status.textContent += `・信頼度 ${confidence}・実効${Number(item.prediction.effective_samples).toFixed(1)}件`;
+    }
     link.append(name, status);
     target.append(link);
   }

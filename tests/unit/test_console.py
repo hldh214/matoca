@@ -63,7 +63,7 @@ def test_console_resolves_shop_status(
     assert (item.status, item.status_label, item.can_join) == (status, label, can_join)
 
 
-def test_console_item_preserves_official_observation_without_prediction_fields() -> None:
+def test_console_item_preserves_official_observation_without_a_prediction() -> None:
     observed_at = datetime(2026, 9, 10, 8, 15, tzinfo=UTC)
     forms = ShopForms(min_adult=1, max_adult=6)
 
@@ -86,7 +86,7 @@ def test_console_item_preserves_official_observation_without_prediction_fields()
     assert item.official_waiting_is_more is True
     assert item.forms == forms
     assert item.updated_at == observed_at
-    assert "prediction" not in item.model_dump()
+    assert item.prediction is None
 
 
 @pytest.mark.parametrize(

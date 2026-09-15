@@ -11,8 +11,10 @@ function plot(document, observations, field, label, day, displayZone) {
   svg.setAttribute("viewBox", "0 0 640 180");
   svg.setAttribute("role", "img");
   svg.setAttribute("aria-label", label);
-  const valid = observations.filter((item) => item.error_code === null && item[field] !== null);
-  const maximum = Math.max(1, ...valid.map((item) => item[field]));
+  const read = (item) => field.startsWith("prediction.")
+    ? item.prediction?.[field.split(".")[1]] ?? null : item[field];
+  const valid = observations.filter((item) => item.error_code === null && read(item) !== null);
+  const maximum = Math.max(1, ...valid.map(read));
   const dayStart = new Date(`${day}T00:00:00+09:00`);
   let segment = [];
   let previousTime = null;
@@ -31,11 +33,12 @@ function plot(document, observations, field, label, day, displayZone) {
     segment = [];
   };
   observations.forEach((item, index) => {
-    if (item.error_code !== null || item[field] === null) return flush();
+    const fieldValue = read(item);
+    if (item.error_code !== null || fieldValue === null) return flush();
     const itemTime = new Date(item.observed_at);
     if (previousTime !== null && itemTime - previousTime > 20 * 60 * 1000) flush();
     const x = 42 + (itemTime - dayStart) * 570 / (24 * 60 * 60 * 1000);
-    const y = 145 - item[field] * 115 / maximum;
+    const y = 145 - fieldValue * 115 / maximum;
     segment.push(`${x.toFixed(1)},${y.toFixed(1)}`);
     if (field === "official_waiting_minutes" && item.official_waiting_is_more) {
       const marker = document.createElementNS(SVG_NS, "circle");
@@ -107,6 +110,9 @@ export class ShopHistoryDialog {
           data.day, this.displayZone),
         plot(this.document, data.observations, "official_waiting_minutes", "公式待ち時間（分）",
           data.day, this.displayZone),
+        ...(data.observations.some((item) => item.prediction)
+          ? [plot(this.document, data.observations, "prediction.typical_minutes", "通常予測（分）",
+            data.day, this.displayZone)] : []),
         ...(data.observations.some((item) => item.official_waiting_is_more)
           ? [element(this.document, "p", "以上を示す点があります")] : []));
     } catch (error) {

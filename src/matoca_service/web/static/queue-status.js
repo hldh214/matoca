@@ -87,6 +87,13 @@ export class QueueStatus {
         metric.append(this.node("b", "", value));
         metrics.append(metric);
       }
+      if (item.prediction) {
+        const confidence = {low: "低", medium: "中", high: "高"}[item.prediction.confidence];
+        const metric = this.node("span", "", "残り予測");
+        metric.append(this.node("b", "", `${item.prediction.fast_minutes}〜${item.prediction.typical_minutes}分`));
+        metric.append(`信頼度 ${confidence}・実効${Number(item.prediction.effective_samples).toFixed(1)}件`);
+        metrics.append(metric);
+      }
       active.append(metrics);
       if (item.status === "active") {
         const cancel = this.node("button", "text-button", "取消");

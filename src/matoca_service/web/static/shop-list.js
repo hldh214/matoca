@@ -3,6 +3,13 @@ export function officialEstimate(minutes, isMore = false) {
   return isMore ? `${minutes}分以上` : `約${minutes}分`;
 }
 
+function predictionEstimate(prediction) {
+  if (!prediction) return "予測なし";
+  const confidence = {low: "信頼度 低", medium: "信頼度 中", high: "信頼度 高"}[prediction.confidence];
+  const samples = Number(prediction.effective_samples).toFixed(1);
+  return `予測 ${prediction.fast_minutes}〜${prediction.typical_minutes}分・${confidence}・実効${samples}件`;
+}
+
 export class ShopList {
   constructor(document, onJoin, onFavorite, onHistory) {
     this.document = document;
@@ -63,8 +70,9 @@ export class ShopList {
       const waiting = this.node("span", "metric");
       waiting.append(this.node("strong", "", shop.current_waiting ?? "—"), "組");
       const estimate = this.node("span", "metric");
-      estimate.append(this.node("strong", "", officialEstimate(
-        shop.official_waiting_minutes, shop.official_waiting_is_more)));
+      estimate.append(this.node("span", "metric-label", "公式"), this.node("strong", "", officialEstimate(
+        shop.official_waiting_minutes, shop.official_waiting_is_more)),
+        this.node("small", "prediction-value", predictionEstimate(shop.prediction)));
       const action = this.node("button", "join-button", !queueKnown ? "順番待ちを確認中"
         : hasQueue ? "順番待ち受付中" : shop.can_join === true ? "今すぐ受付" : "受付できません");
       action.type = "button";

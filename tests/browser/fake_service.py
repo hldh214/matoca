@@ -9,6 +9,7 @@ from matoca_service.analytics.models import (
 )
 from matoca_service.console import MerchantConsoleData, MerchantSummary, ShopConsoleItem
 from matoca_service.matoca.models import Shop, ShopForms, Waiting
+from matoca_service.prediction.models import Prediction
 from matoca_service.service import (
     DashboardData,
     MerchantSnapshot,
@@ -108,6 +109,13 @@ class BrowserFakeService:
             ),
         ]
         self._console_shops[1].official_waiting_minutes = 40
+        self._console_shops[0].prediction = Prediction(
+            fast_minutes=20,
+            typical_minutes=30,
+            confidence="medium",
+            effective_samples=7.5,
+            level="shop_daypart",
+        )
         # Live detail is deliberately stricter than cached list limits and the
         # global settings range (0..20), so the workflow must use the detail API.
         self._console_shops[0].forms = ShopForms(min_adult=1, max_adult=6, min_child=0, max_child=4)
@@ -255,6 +263,13 @@ class BrowserFakeService:
                 called_at=None,
                 cancelled_at=None,
                 status="active",
+                prediction=Prediction(
+                    fast_minutes=20,
+                    typical_minutes=30,
+                    confidence="medium",
+                    effective_samples=7.5,
+                    level="shop_daypart",
+                ),
                 observations=[QueueObservation(observed_at=FIXED_NOW, count=waiting.count)],
             )
             for merchant_key, items in self._waiting.items()
@@ -314,6 +329,17 @@ class BrowserFakeService:
                     official_waiting_minutes=minutes,
                     official_waiting_is_more=False,
                     error_code=error,
+                    prediction=(
+                        Prediction(
+                            fast_minutes=max(0, (minutes or 0) - 5),
+                            typical_minutes=minutes or 0,
+                            confidence="low",
+                            effective_samples=2.0,
+                            level="shop",
+                        )
+                        if minutes is not None and error is None
+                        else None
+                    ),
                 )
                 for minute, waiting, minutes, error in [
                     (0, 2, 10, None),

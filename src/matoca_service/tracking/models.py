@@ -1,7 +1,9 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
+
+from matoca_service.prediction.models import Prediction
 
 QueueStatus = Literal["active", "called", "cancelled", "unknown"]
 QueueSource = Literal["manual", "automation", "adopted"]
@@ -83,4 +85,18 @@ class QueueSession(BaseModel):
     status: QueueStatus
     stale: bool = False
     error_code: str | None = None
+    prediction: Prediction | None = None
     observations: list[QueueObservation]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def trajectory_minutes(self) -> int | None:
+        valid = [(item, item.count) for item in self.observations if item.count is not None]
+        if self.status != "active" or len(valid) < 2:
+            return None
+        (first, first_count), (last, last_count) = valid[0], valid[-1]
+        decrease = first_count - last_count
+        elapsed = (last.observed_at - first.observed_at).total_seconds() / 60
+        if decrease <= 0 or elapsed <= 0 or last_count <= 0:
+            return None
+        return round(last_count * elapsed / decrease)

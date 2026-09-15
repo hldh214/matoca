@@ -64,6 +64,7 @@ def test_selects_merchant_and_filters_shops(
     expect(safe_page.locator("#total-count")).to_have_text("4")
     expect(safe_page.get_by_text("8組")).to_be_visible()
     expect(safe_page.get_by_text("25分")).to_be_visible()
+    expect(safe_page.get_by_text("予測 20〜30分・信頼度 中・実効7.5件")).to_be_visible()
 
     safe_page.get_by_role("button", name="すべて").click()
     expect(safe_page.locator(".shop-row")).to_have_count(4)
@@ -124,7 +125,7 @@ def test_sorts_favorites_and_opens_shop_history(
     rows = safe_page.locator(".shop-row")
     expect(rows.nth(0)).to_contain_text("浜松テスト店")
     expect(rows.nth(1)).to_contain_text("休業テスト店")
-    expect(rows.nth(2).locator(".metric").nth(1)).to_have_text("—")
+    expect(rows.nth(2).locator(".metric").nth(1).locator("strong")).to_have_text("—")
 
     favorite = safe_page.locator('.shop-row[data-id="3274"]').get_by_role(
         "button", name="お気に入りに追加"
@@ -142,8 +143,9 @@ def test_sorts_favorites_and_opens_shop_history(
     expect(dialog.get_by_label("日付")).to_have_value("2026-09-10")
     expect(dialog.get_by_text("待ち組数（組）", exact=True)).to_be_visible()  # noqa: RUF001
     expect(dialog.get_by_text("公式待ち時間（分）", exact=True)).to_be_visible()  # noqa: RUF001
-    expect(dialog.locator("svg")).to_have_count(2)
-    expect(dialog.locator("path.history-line")).to_have_count(4)
+    expect(dialog.get_by_text("通常予測（分）", exact=True)).to_be_visible()  # noqa: RUF001
+    expect(dialog.locator("svg")).to_have_count(3)
+    expect(dialog.locator("path.history-line")).to_have_count(6)
     dialog.get_by_label("日付").fill("2026-09-09")
     expect(dialog.get_by_text("この日の記録はありません")).to_be_visible()
     assert_clean_browser()
@@ -314,6 +316,9 @@ def test_joins_and_cancels_a_synthetic_queue(
     }
     queue_band = safe_page.get_by_role("region", name="現在の順番待ち")
     expect(queue_band.get_by_text("101", exact=True)).to_be_visible()
+    expect(queue_band.locator(".queue-metrics span").last).to_have_text(
+        "残り予測20〜30分信頼度 中・実効7.5件"
+    )
     join_actions = safe_page.get_by_role("button", name="順番待ち受付中", exact=True)
     expect(join_actions).to_have_count(4)
     for action in join_actions.all():
