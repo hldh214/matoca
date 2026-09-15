@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from contextlib import suppress
 
 from matoca_service.automation.runner import AutomationRunner
@@ -24,14 +25,15 @@ class AutomationCoordinator:
 
     async def run(self) -> None:
         while not self._stopped:
+            next_cycle = time.monotonic() + 60
             self._wake.clear()
             try:
                 await self.runner.run_once()
             except Exception:
-                logger.warning("automation evaluation unavailable; retrying in 60 seconds")
+                logger.warning("automation evaluation unavailable; retrying next cycle")
             if not self._stopped:
                 with suppress(TimeoutError):
-                    await asyncio.wait_for(self._wake.wait(), 60)
+                    await asyncio.wait_for(self._wake.wait(), max(0, next_cycle - time.monotonic()))
 
     async def stop(self) -> None:
         self._stopped = True

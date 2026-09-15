@@ -259,8 +259,11 @@ A live destructive integration check still requires immediate explicit user conf
 Global preferences prefill two adults and zero children. Counts are clamped to the live minimum
 and maximum.
 
-- If `is_confirm_child` is false, the child control is hidden and zero is submitted.
-- If it is true, the child control is displayed with its live default and limits.
+- If the live `max_child` is zero, the child control is hidden and zero is submitted.
+- Positive child limits remain supported with their live bounds. The later console correction
+  preserves this behavior independently of `is_confirm_child`; currently observed Sawayaka forms
+  have a false flag and zero limit, while La Ohana has a true flag and a positive limit. A new
+  merchant with contradictory values still requires inspection of its original form.
 - Enabled confirmation items with one unambiguous option are selected automatically.
 - The Sawayaka missed-call cancellation confirmation is selected by default.
 - La Ohana Yokohama Honmoku displays adult and child counts and has no enabled confirmation item
