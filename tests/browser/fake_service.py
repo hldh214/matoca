@@ -33,6 +33,7 @@ class BrowserFakeService:
         self.console_reads = 0
         self.waiting_reads = 0
         self.queue_reads = 0
+        self.queue_stale = False
         self.favorite_ids: set[int] = set()
         self.favorite_delay_seconds = 0.0
         self.favorite_writes: list[tuple[int, bool]] = []
@@ -295,6 +296,7 @@ class BrowserFakeService:
                 called_at=None,
                 cancelled_at=None,
                 status="active",
+                stale=self.queue_stale,
                 prediction=Prediction(
                     fast_minutes=20,
                     typical_minutes=30,

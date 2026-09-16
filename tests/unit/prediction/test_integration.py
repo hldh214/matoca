@@ -8,7 +8,7 @@ from matoca_service.matoca.models import Shop, WaitingEstimate
 from matoca_service.service import MatocaService
 from matoca_service.storage.models import CollectionWrite, ShopObservation
 from matoca_service.storage.repositories import ShopRepository
-from matoca_service.tracking.models import QueueObservation, QueueSession
+from matoca_service.tracking.models import QueueIntent, QueueObservation, QueueRead, QueueSession
 from matoca_service.tracking.repository import QueueRepository
 
 
@@ -95,6 +95,37 @@ def save_observation(
     )
 
 
+def seed_active_queue(
+    app: MatocaService,
+    *,
+    submitted_at: datetime,
+    observed_at: datetime,
+    waiting_id: int,
+    count: int,
+) -> QueueRepository:
+    repository = QueueRepository(app._database)
+    repository.begin_intent(
+        QueueIntent(
+            intent_id=f"intent-{waiting_id}",
+            merchant_key="sawayaka",
+            shop_id=3272,
+            submitted_at=submitted_at,
+            official_minutes_at_submission=30,
+            official_is_more_at_submission=False,
+            adult_count=2,
+            child_count=0,
+        )
+    )
+    repository.resolve_intent(
+        f"intent-{waiting_id}",
+        waiting_id=waiting_id,
+        number=42,
+        count=count,
+        observed_at=observed_at,
+    )
+    return repository
+
+
 @pytest.mark.asyncio
 async def test_console_enriches_fresh_exact_estimate_and_suppresses_stale_or_lower_bound(
     service: tuple[MatocaService, datetime],
@@ -136,7 +167,7 @@ async def test_queues_enrich_only_fresh_active_exact_sessions(
     def seed_sessions(connection):
         rows = [(9101, "active", 0), (9102, "called", 0), (9103, "active", 1)]
         for waiting_id, status, is_more in rows:
-            connection.execute(
+            cursor = connection.execute(
                 """INSERT INTO queue_sessions
                 (merchant_key, shop_id, waiting_id, source, submitted_at, first_observed_at,
                  official_minutes_at_submission, official_is_more_at_submission, called_at, status)
@@ -149,6 +180,10 @@ async def test_queues_enrich_only_fresh_active_exact_sessions(
                     now.isoformat() if status == "called" else None,
                     status,
                 ),
+            )
+            connection.execute(
+                "INSERT INTO queue_session_observations VALUES (?, ?, 3)",
+                (cursor.lastrowid, now.isoformat()),
             )
 
     app._database.write(seed_sessions)
@@ -163,6 +198,147 @@ async def test_queues_enrich_only_fresh_active_exact_sessions(
     QueueRepository(app._database).record_failure("sawayaka", now, "timeout")
     stale = await app.queues()
     assert all(item.prediction is None for item in stale if hasattr(item, "prediction"))
+
+
+@pytest.mark.asyncio
+async def test_queues_mark_an_active_session_stale_when_latest_observation_is_too_old(
+    service: tuple[MatocaService, datetime],
+) -> None:
+    app, now = service
+    repository = seed_active_queue(
+        app,
+        submitted_at=now - timedelta(minutes=10),
+        observed_at=now - timedelta(minutes=10),
+        waiting_id=9201,
+        count=6,
+    )
+    repository.record_read(
+        QueueRead(
+            merchant_key="sawayaka",
+            observed_at=now - timedelta(minutes=4),
+            waiting_id=9201,
+            count=4,
+        )
+    )
+
+    session = next(item for item in await app.queues() if getattr(item, "waiting_id", None) == 9201)
+
+    assert session.status == "active"
+    assert [observation.count for observation in session.observations] == [6, 4]
+    assert session.error_code is None
+    assert session.stale is True
+    assert session.prediction is None
+    assert session.trajectory_minutes is None
+
+
+@pytest.mark.asyncio
+async def test_queue_observation_remains_fresh_through_the_third_minute(
+    service: tuple[MatocaService, datetime],
+) -> None:
+    app, now = service
+    FixedDateTime.now_value = now + timedelta(seconds=59)
+    seed_active_queue(
+        app,
+        submitted_at=now - timedelta(minutes=3),
+        observed_at=now - timedelta(minutes=3),
+        waiting_id=9204,
+        count=4,
+    )
+
+    session = next(item for item in await app.queues() if getattr(item, "waiting_id", None) == 9204)
+
+    assert session.stale is False
+    assert session.prediction is not None
+
+
+@pytest.mark.asyncio
+async def test_active_queue_without_observations_is_stale(
+    service: tuple[MatocaService, datetime],
+) -> None:
+    app, now = service
+    repository = seed_active_queue(
+        app,
+        submitted_at=now - timedelta(minutes=1),
+        observed_at=now - timedelta(minutes=1),
+        waiting_id=9205,
+        count=4,
+    )
+    app._database.write(
+        lambda connection: connection.execute(
+            "DELETE FROM queue_session_observations WHERE session_id=?",
+            (repository.list_sessions()[0].session_id,),
+        )
+    )
+
+    session = next(item for item in await app.queues() if getattr(item, "waiting_id", None) == 9205)
+
+    assert session.status == "active"
+    assert session.observations == []
+    assert session.stale is True
+    assert session.prediction is None
+    assert session.trajectory_minutes is None
+
+
+@pytest.mark.asyncio
+async def test_queues_suppress_trajectory_after_an_explicit_read_failure(
+    service: tuple[MatocaService, datetime],
+) -> None:
+    app, now = service
+    repository = seed_active_queue(
+        app,
+        submitted_at=now - timedelta(minutes=2),
+        observed_at=now - timedelta(minutes=2),
+        waiting_id=9202,
+        count=6,
+    )
+    repository.record_read(
+        QueueRead(
+            merchant_key="sawayaka",
+            observed_at=now - timedelta(minutes=1),
+            waiting_id=9202,
+            count=4,
+        )
+    )
+    repository.record_failure("sawayaka", now, "timeout")
+
+    session = next(item for item in await app.queues() if getattr(item, "waiting_id", None) == 9202)
+
+    assert session.status == "active"
+    assert session.stale is True
+    assert session.error_code == "timeout"
+    assert session.prediction is None
+    assert session.trajectory_minutes is None
+
+
+@pytest.mark.asyncio
+async def test_queues_restore_estimates_after_a_fresh_successful_observation(
+    service: tuple[MatocaService, datetime],
+) -> None:
+    app, now = service
+    repository = seed_active_queue(
+        app,
+        submitted_at=now - timedelta(minutes=2),
+        observed_at=now - timedelta(minutes=2),
+        waiting_id=9203,
+        count=6,
+    )
+    repository.record_failure("sawayaka", now - timedelta(minutes=1), "timeout")
+    repository.record_read(
+        QueueRead(
+            merchant_key="sawayaka",
+            observed_at=now,
+            waiting_id=9203,
+            count=4,
+        )
+    )
+
+    session = next(item for item in await app.queues() if getattr(item, "waiting_id", None) == 9203)
+
+    assert session.status == "active"
+    assert session.stale is False
+    assert session.error_code is None
+    assert session.prediction is not None
+    assert session.trajectory_minutes == 4
 
 
 def test_active_trajectory_requires_a_decreasing_observation() -> None:

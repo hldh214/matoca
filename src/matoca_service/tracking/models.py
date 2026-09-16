@@ -92,7 +92,7 @@ class QueueSession(BaseModel):
     @property
     def trajectory_minutes(self) -> int | None:
         valid = [(item, item.count) for item in self.observations if item.count is not None]
-        if self.status != "active" or len(valid) < 2:
+        if self.stale or self.status != "active" or len(valid) < 2:
             return None
         (first, first_count), (last, last_count) = valid[0], valid[-1]
         decrease = first_count - last_count

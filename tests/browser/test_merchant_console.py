@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from matoca_service.matoca.models import Waiting
 from matoca_service.service import PartyPreferences
 from matoca_service.tracking.models import QueueIntentSummary
 
@@ -375,6 +376,31 @@ def test_zero_count_create_remains_called_when_followup_queue_read_fails(
     queue_band = safe_page.get_by_role("region", name="現在の順番待ち")
     expect(queue_band.get_by_text("呼び出し済み", exact=True)).to_be_visible()
     expect(queue_band.get_by_role("button", name="取消")).to_have_count(0)
+    assert_clean_browser()
+
+
+def test_stale_queue_suppresses_model_prediction(
+    safe_page: Page,
+    browser_base_url: str,
+    browser_service: BrowserFakeService,
+    assert_clean_browser: Callable[[], None],
+) -> None:
+    from playwright.sync_api import expect
+
+    browser_service.create_count = 5
+    browser_service.queue_stale = True
+    browser_service._waiting["sawayaka"].append(
+        Waiting(id=900000001, shop_id="3272", number=101, count=5, adult_count=2, child_count=0)
+    )
+
+    safe_page.goto(f"{browser_base_url}/merchants/sawayaka")
+
+    queue_band = safe_page.get_by_role("region", name="現在の順番待ち")
+    expect(queue_band.get_by_text("浜松テスト店", exact=True)).to_be_visible()
+    expect(
+        queue_band.get_by_text("順番待ちの更新が遅れています。前回の情報を表示しています")
+    ).to_be_visible()
+    expect(queue_band).not_to_contain_text("残り予測")
     assert_clean_browser()
 
 

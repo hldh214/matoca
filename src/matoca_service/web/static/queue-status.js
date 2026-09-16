@@ -90,7 +90,7 @@ export class QueueStatus {
         metric.append(this.node("b", "", value));
         metrics.append(metric);
       }
-      if (item.prediction) {
+      if (!item.stale && item.prediction) {
         const confidence = {low: "低", medium: "中", high: "高"}[item.prediction.confidence];
         const metric = this.node("span", "", "残り予測");
         metric.append(this.node("b", "", `${item.prediction.fast_minutes}〜${item.prediction.typical_minutes}分`));

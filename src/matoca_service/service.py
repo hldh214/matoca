@@ -3,7 +3,7 @@ import sqlite3
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal, TypeVar
 
@@ -45,6 +45,7 @@ from matoca_service.tracking.models import QueueIntent, QueueIntentSummary, Queu
 from matoca_service.tracking.repository import QueueRepository
 
 T = TypeVar("T")
+QUEUE_OBSERVATION_FRESHNESS = timedelta(minutes=3)
 _LIST_IDENTITY_FIELDS = (
     "id",
     "name",
@@ -491,6 +492,7 @@ class MatocaService:
 
     async def queues(self) -> list[QueueSession | QueueIntentSummary]:
         now = datetime.now(tz=UTC)
+        current_minute = now.astimezone(UTC).replace(second=0, microsecond=0)
         sessions = await run_storage(self._queues.list_sessions)
         intents = await run_storage(self._queues.list_unfinished_intents)
         merchants = {item.key: item.name for item in self.list_merchants()}
@@ -507,6 +509,18 @@ class MatocaService:
                     break
         enriched_sessions = []
         for session in sessions:
+            latest_observed_at = (
+                session.observations[-1].observed_at if session.observations else None
+            )
+            stale = session.stale or (
+                session.status == "active"
+                and (
+                    latest_observed_at is None
+                    or current_minute - latest_observed_at.astimezone(UTC)
+                    > QUEUE_OBSERVATION_FRESHNESS
+                )
+            )
+            session = session.model_copy(update={"stale": stale})
             prediction = None
             if (
                 session.status == "active"
