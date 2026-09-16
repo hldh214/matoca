@@ -1,7 +1,8 @@
 import pytest
 
 from matoca_service.service import PartyPreferences, QueueSubmission
-from tests.browser.fake_service import BrowserFakeService
+
+from .fake_service import BrowserFakeService
 
 
 @pytest.mark.asyncio
