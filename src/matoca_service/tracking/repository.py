@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from matoca_service.matoca.models import Waiting
+from matoca_service.notifications.events import queue_observation
 from matoca_service.storage.database import Database
 from matoca_service.tracking.models import (
     QueueIntent,
@@ -287,6 +288,7 @@ class QueueRepository:
                ON CONFLICT (session_id, observed_minute) DO UPDATE SET count=excluded.count""",
             (session_id, _text(_minute(observed_at)), count),
         )
+        queue_observation(connection, session_id, _minute(observed_at), count)
 
     def record_failure(self, merchant_key: str, observed_at: datetime, error_code: str) -> None:
         self._database.write(

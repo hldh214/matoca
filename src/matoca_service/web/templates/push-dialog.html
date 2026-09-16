@@ -1,0 +1,16 @@
+<dialog id="push-dialog" aria-labelledby="push-title" class="push-dialog">
+  <button id="push-close" type="button" aria-label="通知設定を閉じる">×</button>
+  <h2 id="push-title">通知の設定</h2>
+  <p>自動受付の結果、残り10・5・0組、呼び出し予測の前倒しをお知らせします。</p>
+  <p>通知にはHTTPS接続とブラウザーの許可が必要です。iPhone・iPadでは「ホーム画面に追加」してから開いてください。</p>
+  <p>通知は遅延・未着になる場合があります。実際の呼び出しは店舗の案内を確認してください。</p>
+  <p id="push-status" role="status"></p>
+  <div class="push-actions">
+    <button id="push-enable" type="button">通知を有効にする</button>
+    <button id="push-test" type="button">テスト通知を送る</button>
+    <button id="push-disable" type="button">通知を無効にする</button>
+  </div>
+  <h3>通知の履歴</h3>
+  <p>送信待ちに記録した内容です。端末への到着を保証する履歴ではありません。</p>
+  <ol id="push-history"></ol>
+</dialog>

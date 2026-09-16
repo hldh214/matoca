@@ -4,6 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Matoca | 加盟店を選ぶ</title>
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#176b54">
+    <link rel="stylesheet" href="/static/push.css">
+    <script type="module" src="/static/push.js"></script>
     <link rel="stylesheet" href="{{ url_for('static', path='/dashboard.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', path='/merchant-selector.css') }}">
     <script type="module" src="{{ url_for('static', path='/tracking.js') }}" defer></script>
@@ -11,6 +15,7 @@
   <body>
     <header class="app-header">
       <a class="wordmark" href="/">Matoca</a>
+      <button class="push-access" data-push-open type="button">通知の設定</button>
     </header>
     <main class="selector-main">
       <section class="personal-queues" aria-labelledby="personal-queues-title">
@@ -40,5 +45,6 @@
         {% endfor %}
       </div>
     </main>
+    {% include 'push-dialog.html' %}
   </body>
 </html>

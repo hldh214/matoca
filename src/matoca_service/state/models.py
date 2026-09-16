@@ -27,7 +27,14 @@ class LiffTokenState(StateModel):
     issued_at: datetime | None = None
 
 
+class VapidState(StateModel):
+    private_key: str = Field(min_length=1, repr=False)
+    public_key: str = Field(min_length=1)
+    subject: str = Field(min_length=1)
+
+
 class AppState(StateModel):
     version: Literal[1] = 1
     line: LineState
     liff_tokens: dict[str, LiffTokenState] = Field(default_factory=dict)
+    vapid: VapidState | None = None

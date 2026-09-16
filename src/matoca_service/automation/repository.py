@@ -9,6 +9,7 @@ from matoca_service.automation.models import (
     AutomationTask,
     TaskState,
 )
+from matoca_service.notifications.events import task_event
 from matoca_service.storage.database import Database
 from matoca_service.tracking.models import QueueIntent
 from matoca_service.tracking.repository import QueueRepository
@@ -62,6 +63,7 @@ class AutomationRepository:
             "INSERT INTO automation_events (task_id, at, state, decision) VALUES (?, ?, ?, ?)",
             (task_id, now.astimezone(UTC).isoformat(), state, decision),
         )
+        task_event(connection, task_id, state, now)
 
     def list_tasks(self) -> list[AutomationTask]:
         def read(connection: sqlite3.Connection) -> list[AutomationTask]:

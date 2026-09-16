@@ -29,6 +29,9 @@ from matoca_service.line.refresh import LineRefreshClient
 from matoca_service.line.token_manager import TokenManager
 from matoca_service.matoca.client import MatocaApiError, MatocaClient
 from matoca_service.matoca.models import CreateWaitingRequest, Shop, ShopOptions, Waiting
+from matoca_service.notifications.keys import VapidKeys
+from matoca_service.notifications.repository import NotificationRepository
+from matoca_service.notifications.service import NotificationService
 from matoca_service.prediction.model import remaining
 from matoca_service.prediction.models import Prediction
 from matoca_service.prediction.repository import PredictionRepository, PredictionService
@@ -234,6 +237,9 @@ class MatocaService:
         self._store = JsonStateStore(state_path)
         self._database = Database(database_path)
         self._database.initialize()
+        self.notifications = NotificationService(
+            NotificationRepository(self._database), VapidKeys(self._store)
+        )
         self._shops = ShopRepository(self._database)
         self._preferences = PreferenceRepository(self._database)
         self._analytics = AnalyticsRepository(self._database)

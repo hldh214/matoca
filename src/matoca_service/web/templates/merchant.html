@@ -4,6 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ merchant.name }} | Matoca</title>
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#176b54">
+    <link rel="stylesheet" href="/static/push.css">
+    <script type="module" src="/static/push.js"></script>
     <link rel="stylesheet" href="{{ url_for('static', path='/dashboard.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', path='/merchant.css') }}">
     <script type="module" src="{{ url_for('static', path='/merchant.js') }}" defer></script>
@@ -64,6 +68,7 @@
         <p id="settings-error" class="form-error" role="alert"></p>
         <button type="submit" class="primary-button">設定を保存</button>
       </form>
+      <button class="push-access" data-push-open type="button">通知の設定</button>
     </dialog>
     <dialog id="join-dialog" class="queue-dialog" aria-labelledby="join-shop-name">
       <form method="dialog" id="join-form">
@@ -98,5 +103,6 @@
         <button type="submit" class="danger-button">順番待ちを取り消す</button>
       </form>
     </dialog>
+    {% include 'push-dialog.html' %}
   </body>
 </html>

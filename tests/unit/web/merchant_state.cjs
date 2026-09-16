@@ -275,9 +275,10 @@ const cases = {
   },
   async upstream_text_and_errors_are_safe() {
     const app = await setup(); app.state.catalog.shops[0].sub_name = '<img src=x onerror=alert(1)>';
+    const initialScriptCount = app.document.querySelectorAll('script').length;
     app.state.catalog.shops[0].address = '<script>悪意のある文字列</script>'; app.state.catalog.shops[0].image_url = 'https://example.test/photo?quote=" onerror="';
     await app.tick(); assert.match(app.get('#shop-list').textContent, /<img src=x onerror=alert\(1\)>/);
-    assert.equal(app.document.querySelectorAll('script').length, 1); assert.equal(app.get('#shop-list').querySelectorAll('img').length, 1);
+    assert.equal(app.document.querySelectorAll('script').length, initialScriptCount); assert.equal(app.get('#shop-list').querySelectorAll('img').length, 1);
     app.state.createError = {detail: '受付状況が変更されました'}; await app.click('.join-button'); await app.submit('#join-form');
     assert.equal(app.get('#join-error').textContent, '受付状況が変更されました'); assert.equal(app.get('#join-dialog').open, true);
     app.state.createError = {detail: 'Internal server error'}; await app.submit('#join-form');

@@ -1,299 +1,46 @@
-# Matoca Service Design
+# Matoca Service
 
-Date: 2026-09-10
+A single-user Japanese queue console with persistent collection, shop history,
+favorites, queue tracking, arrival-time automation and optional browser Web Push.
+Runs as one Python process and one Uvicorn worker behind a trusted access-control
+proxy, such as Cloudflare Zero Trust. There is no application login.
 
-## Current Status
-
-The working implementation currently supports:
-
-- Structural validation of a configured LINE native access/refresh pair.
-- Atomic native credential rotation through the captured Thrift Compact
-  Protocol endpoint.
-- LIFF access-token issuance and per-LIFF caching.
-- Matoca shop details, waiting status, queue creation, and cancellation.
-- A responsive Japanese Web console for scanning and operating supported merchants.
-
-## Supported Merchants
+## Supported merchants
 
 | Merchant | Status | Capabilities |
 | --- | --- | --- |
-| 炭焼きレストラン さわやか | Supported | Shop availability, wait estimates, join queue, current queue, cancellation |
-| ラ・オハナ 横浜本牧 | Supported | Shop availability, wait estimates, join queue, current queue, cancellation |
+| 炭焼きレストラン さわやか | Supported | Availability, estimates, manual queue/cancellation, tracking, arrival tasks |
+| ラ・オハナ 横浜本牧 | Supported | Availability, estimates, manual queue/cancellation, tracking, arrival tasks |
 
-Supported merchants are defined by the tracked internal registry
-`src/matoca_service/merchant_registry.toml`. Users configure LINE client metadata and
-authentication state, not merchant endpoints. A new merchant is added only after its
-authentication and queue protocol have been verified from captures.
+The tracked `src/matoca_service/merchant_registry.toml` defines the supported
+merchants. Adding a merchant requires capture-backed authentication and queue
+protocol verification; users configure client metadata and credentials, not endpoints.
 
-The real Sawayaka flow was verified on 2026-09-10:
+## Setup and runtime
 
-```text
-configured LINE native pair
-  -> issueLiffView
-  -> LIFF access token
-  -> POST /liff/auth: 200 success
-  -> GET /liff/shops: 200, real shop data
-```
-
-Matoca directly reuses the LIFF access token as its Bearer credential. The
-observed `/liff/auth` response does not issue a Matoca cookie, session, or
-replacement JWT.
-
-## Quick Start
-
-Install `uv`, then run:
+The project uses uv-managed CPython 3.14; system Python and pip are not required.
+Paths below are relative to the checkout and may be overridden with environment
+variables. No machine-specific directory or operating-system account is required.
 
 ```bash
 uv python install 3.14
-uv sync --all-groups
+uv sync --frozen
 cp .env.example .env
 cp line_client.example.toml line_client.toml
 cp state.example.json state.json
 chmod 600 .env line_client.toml state.json
 ```
 
-Replace only the placeholder values in `state.json`:
-
-```json
-{
-  "version": 1,
-  "line": {
-    "access_token": "current LINE native access token",
-    "refresh_token": "matching LINE native refresh token",
-    "access_expires_at": null,
-    "refresh_expires_at": null,
-    "rtid": null,
-    "aid": null,
-    "lsid": null,
-    "adid": "LINE device advertising identifier",
-    "updated_at": null,
-    "pending_access_report": false
-  },
-  "liff_tokens": {}
-}
-```
-
-Start the Web UI:
+Replace the placeholders in `state.json` with the matching native LINE access and
+refresh tokens and device advertising identifier. Configure the captured device
+client metadata in `line_client.toml`. The original version-1 `state.example.json`
+remains compatible; no notification fields need to be added manually.
 
 ```bash
 uv run matoca-web
 ```
 
-The default address is:
-
-```text
-http://127.0.0.1:48173
-```
-
-## Manual Web Console
-
-The Web UI is a manual queue console for the supported merchants. The first page asks
-the user to choose a `加盟店`; it currently lists `炭焼きレストラン さわやか` and
-`ラ・オハナ 横浜本牧`.
-
-On a merchant page:
-
-- The initial filter is `受付可能`, so shops that can accept a queue request are shown
-  first without extra interaction.
-- Every shop row shows the current number of waiting groups and Matoca's `公式目安`.
-- Global party settings are available from the header. New installations default to
-  `大人 2 人` and `子ども 0 人`; each shop's live form limits are still applied when the
-  join dialog opens.
-- Joining and cancelling are explicit `手動操作`. This phase does not schedule a future
-  arrival time or automatically submit a queue request.
-
-店舗一覧は SQLite キャッシュから表示され、バックグラウンド収集とは別に安全に閲覧
-できます。現在の順番待ちは Matoca API から独立して更新されるため、店舗一覧の再読込で
-進行中の順番待ちが消えることはありません。ヘッダーの更新ボタンは、必要なときだけ店舗
-情報の手動更新を要求します。
-
-For a private server, bind to the private interface used by Cloudflare Tunnel
-or another trusted reverse proxy. The application intentionally does
-not implement user login because the deployment is expected to be protected
-by the external access-control layer.
-
-## Goal
-
-Build a portable, single-user service that can run locally or on a Linux
-server and:
-
-- Starts from a manually configured LINE native access-token and
-  refresh-token pair.
-- Automatically rotates and persists both LINE tokens.
-- Obtains LIFF access tokens for configured merchants.
-- Later uses LIFF access tokens to explore and call Matoca APIs.
-- Supports Sawayaka first without hard-coding Sawayaka into protocol clients.
-- Can expose a Web UI behind an external access-control layer such as
-  Cloudflare Zero Trust.
-
-The initial implementation established LINE authentication first. Read-only
-Matoca operations and the Web UI now build on that authenticated client.
-
-This system cannot guarantee permanent operation. LINE logout, device
-revocation, account restrictions, token revocation, or private protocol
-changes can require manual recovery or a new token pair.
-
-## Runtime Boundary
-
-All paths in this document are relative to the repository root unless stated
-otherwise. The application does not depend on a specific checkout directory,
-operating-system user, or hosting provider.
-
-The Web service runs as one process and listens on a configurable address.
-Bind it only to the private interface reached by the trusted reverse proxy or
-access-control tunnel; it does not accept a CIDR setting itself.
-
-The application never displays raw LINE or LIFF tokens in the Web UI, logs,
-test reports, or exception messages.
-
-## Python and Package Management
-
-The project uses `uv` for:
-
-- Installing and managing CPython.
-- Creating `.venv`.
-- Resolving and locking dependencies.
-- Running tests, tools, scripts, and the application.
-
-The operating system's Python installation is not used by the project.
-
-Pinned interpreter:
-
-```text
-CPython 3.14
-```
-
-Repository files:
-
-```text
-.python-version
-pyproject.toml
-uv.lock
-uv.toml
-```
-
-Expected settings:
-
-```text
-.python-version: 3.14
-requires-python: >=3.14,<3.15
-python-preference: only-managed
-```
-
-All commands run through `uv`, for example:
-
-```bash
-uv python install 3.14
-uv sync --all-groups
-uv run pytest
-uv run matoca-line status
-```
-
-Direct use of `/usr/bin/python`, `python3`, `pip`, or a manually created
-virtual environment is outside the supported workflow.
-
-## Technology
-
-Phase 1:
-
-- CPython 3.14 managed by `uv`.
-- HTTPX with HTTP/2 support.
-- Apache Thrift Compact Protocol.
-- Pydantic v2 for state and protocol result validation.
-- Typer for diagnostic and administrative CLI commands.
-- pytest, pytest-asyncio, respx, coverage, Ruff, and mypy.
-- `fcntl.flock` and atomic file replacement for state persistence.
-
-Web interface:
-
-- FastAPI and Uvicorn with one worker.
-- Jinja2 server-rendered HTML.
-
-The single-user, single-instance runtime requires a local SQLite database and creates it
-automatically at the configured database path.
-
-## SQLite Storage and Collection
-
-`MATOCA_DATABASE_FILE` selects the SQLite database file and defaults to
-`./data/matoca.db`. The ignored `data/` directory is created with mode `0700`; the
-database and its SQLite WAL/SHM sidecars are enforced as mode `0600`.
-
-The collection coordinator makes read-only merchant requests adaptively: it polls a
-merchant without history every five minutes, polls during its learned operating window
-every minute, and polls outside that window every 15 minutes. It never overlaps requests
-for the same merchant and honors merchant-specific rate-limit backoff.
-
-Manual refreshes and requests without a cached catalog share the same admission and
-durable backoff. Detail-level rate limits preserve the list and any completed detail
-observations before recording the retry deadline. Static identity fields refresh once
-per Tokyo calendar day; live observations and queue forms continue updating each cycle.
-Complete catalogs replace current membership, including an empty catalog. Partial
-catalogs preserve known members with a stale status; historical observations remain
-available after a shop leaves the current catalog.
-
-SQLite operations run outside the event loop. Transient storage failures retry after
-60 seconds with sanitized logging. Shutdown allows 0.1 seconds for normal completion,
-then cancels collection and allows up to 10 seconds to drain outstanding storage; failure
-to drain raises a shutdown error. Configure Supervisor's stop timeout above this bound.
-Schema version 5 upgrades versions 1–4 additively and records catalog timing and membership.
-
-Raw minute observations remain in SQLite for 180 days. Daily maintenance converts older
-fresh observations into five-minute waiting-group and waiting-time aggregates before
-deleting the corresponding raw rows.
-
-The offline frontend integration test runs the actual merchant script against synthetic
-DOM and HTTP boundaries and requires Node.js 22 or newer on the test host. Node.js is not
-a runtime dependency of the Web service.
-
-## Repository-Local Configuration
-
-All runtime configuration and state are stored in the repository root by
-default. Paths can be overridden through environment variables when a
-packager or deployment needs a different layout. Real configuration files
-are ignored by Git.
-
-Ignored files:
-
-```text
-.env
-line_client.toml
-state.json
-state.lock
-data/
-events.jsonl
-*.tmp
-```
-
-Tracked templates:
-
-```text
-.env.example
-line_client.example.toml
-state.example.json
-```
-
-`.gitignore` must also exclude:
-
-```text
-.venv/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-htmlcov/
-coverage.xml
-```
-
-File permissions:
-
-```text
-.env        0600
-line_client.toml 0600
-state.json  0600
-```
-
-### `.env`
-
-`.env` contains fixed process configuration only:
+The default UI is `http://127.0.0.1:48173`. Process configuration in `.env`:
 
 ```dotenv
 MATOCA_LINE_CLIENT_FILE=./line_client.toml
@@ -304,407 +51,186 @@ MATOCA_HOST=127.0.0.1
 MATOCA_PORT=48173
 ```
 
-It does not contain LINE access tokens, refresh tokens, LIFF tokens, or other
-rotating authentication data.
+Bind only to the private interface reached by the trusted reverse proxy or access
+tunnel. Run one process, one worker under Supervisor; multiple workers would create
+multiple background schedulers. For an existing deployment, synchronize the locked
+dependencies and restart its Supervisor program. Set the Supervisor stop timeout
+above the storage/network drain bound (at least 30 seconds).
 
-### `line_client.toml`
+HTTP on the private LAN supports the normal console. Web Push requires the externally
+configured HTTPS origin. Configure the proxy's trusted forwarding and access policy
+for the same origin, including `/sw.js`, `/manifest.webmanifest`, `/static/` and `/api/`.
 
-`line_client.toml` contains device-dependent LINE client metadata:
+## Using the console
 
-```toml
-host = "legy-jp.line-apps.com"
-application = "ANDROIDSECONDARY\t26.11.0\tAndroid OS\t14"
-locale = "en_US"
-protocol_version = "1"
-user_agent = "Line/26.11.0"
-```
+The homepage shows current personal queues and the merchant selector. A merchant
+page shows cached shops, current waiting groups and the official waiting estimate.
+Filter available shops or all shops, search by name, sort, and pin favorites. Shop
+history includes date selection and observed minute values with visible gaps and
+freshness; snapshots alone do not establish an actual call time.
 
-Merchant definitions remain tracked in `src/matoca_service/merchant_registry.toml` as part
-of the project source. SQLite data is stored in `data/matoca.db` and is never committed.
+`受付可能` is the initial filter and `公式目安` labels the official estimate.
+店舗一覧は SQLite キャッシュから表示されます。現在の順番待ちは Matoca API から独立して更新されます。
 
-### `state.json`
+The header settings default to two adults and zero children. Shop forms still apply
+their fresh limits and confirmation fields. Manual joining and cancellation require
+explicit actions. Queue admission is serialized across merchants for this account.
+The initial Japanese counters are `大人 2 人` and `子ども 0 人`; `手動操作` always
+requires its explicit confirmation independently of enabled arrival tasks.
+If a submission result is unknown, the UI exposes reconciliation and explicit
+confirmation that no queue exists; it never blindly repeats the submission.
 
-`state.json` is the only source of mutable authentication state.
+Queue tracking persists minute observations and survives process restarts. Observed
+zero groups is the agreed proxy for a call, not a claim about an unobserved upstream
+status. Disappearance without a known cancellation is marked unknown. Adopted
+external tickets have unknown submission time and do not become training samples.
 
-The user creates it once before the first run:
+Predictions use observed completed queue sessions and the official estimate frozen
+at submission: merchant, shop, and comparable day/time samples are combined with
+shrinkage and recency weighting. Cold starts use the official estimate. The UI shows
+fast/typical estimates, confidence, sample count and stale/lower-bound information.
+Predictions remain uncertain; neither the model nor collection predicts reception
+closing times.
 
-```json
-{
-  "version": 1,
-  "line": {
-    "access_token": "...",
-    "refresh_token": "...",
-    "access_expires_at": null,
-    "refresh_expires_at": null,
-    "rtid": null,
-    "aid": null,
-    "lsid": null,
-    "adid": "...",
-    "updated_at": null,
-    "pending_access_report": false
-  },
-  "liff_tokens": {}
-}
-```
+## Arrival-time automatic reception
 
-On first load, the service decodes the configured JWTs, validates that the
-access and refresh tokens belong together, derives claims such as `aid`,
-`lsid`, `rtid`, and expiry times, and atomically normalizes the state file.
-
-There is no bootstrap environment file and no import or migration from
-`.env`.
-
-## Atomic Token Rotation
-
-The captured refresh request requires:
+Select `自動受付を設定`, enter an arrival time and explicitly check the consent box.
+Only an enabled task authorizes a future automatic queue submission. The default
+early tolerance and model error are both 15 minutes. The task evaluates roughly
+once per minute using:
 
 ```text
-Header: old x-line-access
-Body: old Refresh Token
+now + max(0, fast prediction − model error) ≥ arrival − early tolerance
 ```
 
-The refresh response returns:
+The runner verifies live availability, the account's current queues, form semantics
+and answer limits before submitting. It allows a two-minute grace period after
+arrival and otherwise expires. The UI exposes the decision, last/next evaluation,
+monitoring cancellation and uncertain-result resolution. Cancelling monitoring does
+not cancel an already-issued ticket; use the separate queue cancellation operation.
+Restart recovery follows the durable task/intent/session linkage without replaying
+ambiguous submissions. Changed forms or uncertain reads may require attention.
+
+## Browser notifications
+
+Open the HTTPS UI. On the homepage select `通知の設定`; on merchant pages open the
+header `設定` and then `通知の設定`. Choose `通知を有効にする` and accept the browser's
+permission prompt. On iPhone/iPad add the site to the Home Screen and open that web
+app first. Then choose `テスト通知を送る` and confirm reception on the physical device.
+Permission and physical delivery are user-initiated; automated tests do not prove
+delivery to a real phone. `通知を無効にする` removes this browser's subscription.
+
+Notifications cover automated submission success, tasks needing attention, failure
+or expiry, and waiting groups at 10/5/0. A separate estimate from successive fresh
+decreasing group counts notifies when the absolute predicted call target advances
+by at least ten minutes. Merely waiting ten minutes does not trigger it; gaps over
+ten minutes discard the trajectory baseline. This estimate is labeled as derived
+from decreasing groups and is not an observed call or reception-closing forecast.
+
+The server records notifications transactionally with task/queue changes, deduplicates
+them durably, and dispatches without requiring an open page. Each subscription has
+independent retries after 1/5/15 minutes; expired 404/410 endpoints are removed.
+Delivery batches are limited to 20, network timeout is ten seconds, and the push
+service TTL is 15 minutes. Network errors never undo business transitions.
+Notification history shows locally recorded events, not proof of device reception.
+Browser/OS settings, network availability and push services can delay or prevent
+delivery. Always follow the shop's actual guidance.
+
+VAPID keys are generated only on explicit enable. The private key stays in
+`state.json` (0600); a fresh locked load/save preserves current LINE credentials.
+The HTTPS origin used to enable notifications supplies the nonsecret VAPID subject.
+Subscriptions and delivery records live in the ignored SQLite database. Endpoint
+capabilities, subscription keys and upstream exception bodies never appear in the
+UI or logs. The worker only opens same-origin homepage/merchant URLs and does not
+cache account pages or APIs. The manifest and icons are self-contained.
+
+Notification endpoints: `GET /api/push/public-key` is read-only;
+`POST /api/push/public-key` explicitly initializes keys; `POST/DELETE
+/api/push/subscriptions` register/remove a browser; `POST /api/push/test` targets
+one registered browser; `GET /api/push/history` returns redacted local history.
+Writes require same-origin requests.
+
+## Storage and collection
+
+The ignored `data/` directory uses mode 0700 and the database/WAL/SHM use 0600.
+Schema version 9 upgrades earlier databases additively: cached shops/observations,
+catalog membership, favorites, queue intents/sessions, arrival tasks, notification
+outbox/deliveries and trajectory baselines. Authentication remains outside SQLite.
+Keep the database and `state.json` together when backing up the instance.
+
+Collection is read-only and adaptive: five minutes without history, one minute in
+learned operating windows or with an active arrival task, fifteen minutes outside
+the window. Merchant-specific durable backoff applies to automatic and manual reads.
+Static identity refreshes daily in Tokyo time; live forms and observations refresh
+each cycle. Complete catalogs replace membership; partial/error reads preserve
+known data with stale status. Raw observations remain for 180 days; older fresh
+observations roll up into five-minute aggregates. SQLite and state locking run off
+the event loop. Real state, captures, `.env`, `line_client.toml` and `data/` are never
+committed.
+
+## Capture-backed LINE authentication
+
+The Sawayaka read flow was verified on 2026-09-10:
 
 ```text
-new x-line-access
-new Refresh Token
+configured native pair → issueLiffView → LIFF access token
+→ POST /liff/auth: 200 → GET /liff/shops: 200
 ```
 
-The two returned tokens form one state transition and are never persisted
-separately.
+Matoca directly uses the LIFF access token as its Bearer credential. The observed
+`/liff/auth` response does not issue a cookie, session or replacement JWT.
 
-Update sequence:
+Native refresh uses Thrift Compact Protocol at
+`POST https://legy-jp.line-apps.com/EXT/auth/tokenrefresh/v1`, with the old access token
+in `x-line-access` and the old refresh token in the body. Captured sequence:
+`reportRefreshedAccessToken(old)`, `refresh`, `reportRefreshedAccessToken(new)`.
+Both returned tokens are persisted as one atomic replacement under `state.lock`,
+after a fresh load and relationship/expiry validation, file fsync, chmod0600 and
+parent-directory fsync. Ambiguous refresh failure is not automatically retried.
 
-1. Acquire an exclusive `state.lock` using `fcntl.flock`.
-2. Reload `state.json` after acquiring the lock.
-3. Re-evaluate whether refresh is still required.
-4. Send at most one refresh request.
-5. Decode and validate both returned JWTs.
-6. Verify token relationships, identifiers, and expiry ordering.
-7. Build a complete replacement state document in memory.
-8. Write it to a temporary file in the repository directory.
-9. Flush and `fsync` the file.
-10. Set mode `0600`.
-11. Atomically replace `state.json` with `os.replace`.
-12. `fsync` the parent directory.
-13. Release the lock.
+The successful capture showed a seven-day native access lifetime and a rotating
+refresh JWT with expiry advancing approximately one year. Refresh `jti` remains
+the credential-family identifier; `ati` changes to the new access `jti`; `rot` is
+`ROTATE`. Structured Thrift decoding skips unknown fields and never scans bodies
+for token-like strings.
 
-The new token pair is persisted before reporting the refreshed access token
-or making any LIFF request.
+LIFF issuance uses Thrift method `issueLiffView` at
+`POST https://legy-jp.line-apps.com/LIFF1`, with current `x-line-access`, merchant
+`x-line-liff-id`, client application, locale and protocol headers. Device/account
+fields derive from validated claims where possible; advertising identifier remains
+in `state.json`. Per-LIFF tokens are cached under `liff_tokens` in that same file.
 
-An ambiguous network failure during `refresh` is not retried automatically.
-The old refresh token might already have been consumed. The CLI reports a
-recovery-required state without printing either token.
+Logout, device revocation, account restrictions, revoked credentials or private
+protocol changes can require a new native pair or manual recovery. Diagnostic CLI
+commands are available via `uv run matoca-line --help`; tokens are redacted.
 
-## Captured Native Refresh Flow
+## Verification
 
-Endpoint:
-
-```text
-POST https://legy-jp.line-apps.com/EXT/auth/tokenrefresh/v1
-Content-Type: application/x-thrift
-Thrift Compact Protocol
-```
-
-Sequence:
-
-```text
-reportRefreshedAccessToken(old access token)
-refresh(old refresh token)
-    -> new access token
-    -> new refresh token
-reportRefreshedAccessToken(new access token)
-```
-
-The successful capture proves:
-
-- Native access-token lifetime is seven days.
-- The refresh-token JWT is rotated.
-- Refresh-token expiry rolls forward approximately one year.
-- Refresh-token `jti` remains the credential-family identifier.
-- Refresh-token `ati` changes to the new access-token `jti`.
-- Refresh-token `rot` is `ROTATE`.
-
-The implementation uses structured Thrift Compact Protocol reads and writes.
-It must not scan binary payloads for strings beginning with `eyJ`.
-
-Unknown response fields are skipped according to their Thrift types so future
-additive protocol changes do not break token extraction.
-
-## Captured LIFF Issuance Flow
-
-Endpoint:
-
-```text
-POST https://legy-jp.line-apps.com/LIFF1
-Content-Type: application/x-thrift
-Thrift Compact Protocol
-Thrift method: issueLiffView
-```
-
-Headers:
-
-```text
-x-line-access: current native access token
-x-line-liff-id: merchant LIFF ID
-x-line-application: configured native application metadata
-x-lal: configured locale
-x-lpv: configured protocol version
-```
-
-The request includes account/device data and merchant-specific LIFF entry
-data. Values derivable from token claims are derived rather than duplicated
-in configuration. Device values that are not derivable, including `adid`,
-remain in `state.json`.
-
-Returned LIFF access tokens are stored in:
-
-```text
-state.json -> liff_tokens -> <liff_id>
-```
-
-The LIFF token manager supports:
-
-- Obtaining a LIFF token for a configured merchant.
-- Returning a cached token while valid.
-- Forcing one renewal.
-- Keeping tokens isolated by LIFF ID.
-- Never logging or returning token text through diagnostics.
-
-## Phase 1 Scope: LINE Authentication
-
-Phase 1 delivers only:
-
-1. `uv` project and managed CPython setup.
-2. Configuration and state models.
-3. JWT decoding and relationship validation.
-4. Atomic JSON state store and file locking.
-5. Thrift Compact Protocol structures for:
-   - `refresh`
-   - `reportRefreshedAccessToken`
-   - `issueLiffView`
-6. Native access and refresh token rotation.
-7. LIFF access-token issuance and per-LIFF caching.
-8. CLI diagnostics with redacted output.
-9. Offline unit tests.
-10. Explicit live integration tests using the ignored `state.json`.
-
-Matoca shop, waiting, queue creation, cancellation, and Web UI modules are
-not part of Phase 1.
-
-## Phase 1 CLI
-
-Planned commands:
-
-```bash
-uv run matoca-line state validate
-uv run matoca-line state status
-uv run matoca-line token refresh
-uv run matoca-line token ensure
-uv run matoca-line liff issue sawayaka
-uv run matoca-line liff status
-```
-
-Example redacted status:
-
-```text
-Native access token: valid
-Access expiry: 2026-09-17T09:47:18+09:00
-Refresh token: present
-Refresh expiry: 2027-09-10T09:47:18+09:00
-Credential family: 15cf1ed2...8bed7
-LIFF sawayaka: valid
-```
-
-## Testing Requirements
-
-### Offline tests
-
-- Thrift message header, field ID, type, and nesting tests.
-- Golden-byte request tests built with synthetic, non-secret tokens.
-- Captured-response-shape tests using fully sanitized fixtures.
-- JWT header and payload decoding tests.
-- Access and refresh token relationship tests:
-  - refresh `jti` equals access `rtid`
-  - refresh `ati` points to the associated access `jti`
-  - `aud`, `scp`, `aid`, `lsid`, and application metadata agree
-- Expiry and refresh-threshold tests.
-- Unknown Thrift field skipping tests.
-- Atomic replacement, permissions, `fsync`, and lock-contention tests.
-- Tests proving tokens are redacted from logs and exceptions.
-- Tests proving ambiguous refresh failures are not retried.
-- Tests proving a returned token pair is persisted before reporting or LIFF
-  issuance.
-
-### Live integration tests
-
-Live tests are opt-in and excluded from the default test command:
+Default tests are offline and do not require Playwright or Chromium:
 
 ```bash
 uv run pytest
-uv run pytest -m live
+uv run ruff check src tests
+uv run ruff format --check src tests
+uv run mypy src
+uv build
 ```
 
-Rules for live tests:
-
-- Read credentials only from ignored `state.json`.
-- Acquire the same exclusive state lock as production.
-- Never run in parallel.
-- Save rotated tokens atomically.
-- Never print request or response bodies containing credentials.
-- A destructive refresh test runs only when explicitly selected.
-- LIFF issuance may run independently while the native token remains valid.
-
-Successful live tests establish that the implementation reproduces the
-captured protocol against the real LINE service.
-
-### Browser UI tests
-
-The normal test suite excludes the separate `browser` marker and neither requires nor
-launches Chromium:
-
-```bash
-uv run pytest
-```
-
-Install the browser dependency group and its matching Chromium build before running the
-standalone browser gate:
+Frontend offline behavior checks require Node.js 22 or newer on the test host; Node
+and browser packages are not runtime dependencies. Browser tests are an optional
+group, served from a synthetic in-memory service on loopback with all external traffic
+blocked, including HTTP and WebSockets. Push tests simulate the permission/push boundary and execute worker behavior
+offline; they never send real notifications or access actual queues/credentials.
 
 ```bash
 uv sync --group browser
 uv run --group browser python -m playwright install --with-deps chromium
-uv run --group browser pytest -m browser \
-  --tracing retain-on-failure \
-  --screenshot only-on-failure \
-  --full-page-screenshot
+uv run --group browser pytest -m browser --tracing retain-on-failure \
+  --screenshot only-on-failure --full-page-screenshot
 ```
 
-These tests serve the real UI from an injected in-memory service on a temporary loopback
-address and block all external traffic. They use synthetic data, never read credentials,
-and never read or mutate a real queue. Failure screenshots and traces are written under
-`test-results/`. Open a retained trace with:
-
-```bash
-uv run --group browser playwright show-trace test-results/<test-name>/trace.zip
-```
-
-After upgrading Playwright, rerun the install command so its matching Chromium build is
-installed.
-
-## Post-Phase-1 Interface Exploration
-
-After all Phase 1 offline tests pass and live refresh plus LIFF issuance are
-verified, the agent may use the authorized credentials in `state.json` to
-explore Matoca behavior.
-
-Exploration no longer depends on Charles.
-
-Use, in order:
-
-1. Direct HTTP calls with the issued LIFF access token for known Matoca APIs.
-2. An agent-controlled browser when JavaScript execution, navigation state,
-   geolocation, or UI-generated payloads must be observed.
-3. Sanitized JSON fixtures committed to the repository.
-
-Exploration starts with read-only calls. State-changing actions such as
-joining or cancelling a real queue require explicit user authorization for
-that operation.
-
-Target operations:
-
-```text
-POST   /liff/auth
-GET    /liff/shops
-GET    /liff/shops/{shop_id}
-GET    /liff/waiting
-GET    /liff/waiting/{waiting_id}
-POST   /liff/waiting
-DELETE /liff/waiting/{waiting_id}
-```
-
-The agent records:
-
-- Request method, path, query, headers, and JSON body.
-- Response status and schema.
-- Authentication failure behavior.
-- Active waiting-state schemas.
-- Cancellation behavior.
-- Duplicate and suspended-shop errors.
-- LIFF token expiry and renewal behavior.
-
-No raw tokens are committed to Git.
-
-## Later Architecture
-
-After protocol exploration, later modules are added:
-
-```text
-src/matoca_service/
-  matoca/
-    client.py
-    models.py
-    service.py
-  merchants/
-    models.py
-    registry.py
-  web/
-    routes.py
-    templates/
-    static/
-  jobs/
-    waiting_poll.py
-```
-
-The Web UI is designed to run behind a trusted access-control layer. Queue operations
-use the selected shop coordinates supplied by Matoca and do not request browser geolocation.
-
-## Initial Project Structure
-
-Phase 1 creates:
-
-```text
-.
-  .gitignore
-  .python-version
-  uv.toml
-  pyproject.toml
-  uv.lock
-  README.md
-  .env.example
-  config.example.toml
-  state.example.json
-  src/
-    matoca_service/
-      __init__.py
-      config.py
-      cli.py
-      line/
-        __init__.py
-        jwt.py
-        models.py
-        thrift_codec.py
-        refresh.py
-        liff.py
-        token_manager.py
-      state/
-        __init__.py
-        models.py
-        store.py
-        locking.py
-  tests/
-    fixtures/
-    unit/
-    integration/
-```
-
-## Delivery Phases
-
-1. Rewrite and approve this design.
-2. Create a detailed implementation plan.
-3. Build project foundation and state handling with tests.
-4. Implement and test native LINE token refresh.
-5. Implement and test LIFF issuance.
-6. Run explicit live LINE integration tests.
-7. Use the authenticated client to explore Matoca APIs.
-8. Design and implement the generic Matoca client.
-9. Add the Web UI and optional deployment examples.
+Failure artifacts are kept under ignored `test-results/`; open them with
+`uv run --group browser playwright show-trace test-results/<test-name>/trace.zip`.
+After upgrading Playwright install its matching Chromium build again. Any live
+protocol verification or real queue creation/cancellation requires explicit scope;
+offline tests never rotate configured credentials.

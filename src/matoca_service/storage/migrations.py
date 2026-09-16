@@ -249,6 +249,26 @@ def _create_automation(connection: sqlite3.Connection) -> None:
         at TEXT NOT NULL, state TEXT NOT NULL, decision TEXT NOT NULL)""")
 
 
+def _create_notifications(connection: sqlite3.Connection) -> None:
+    for statement in (
+        """CREATE TABLE push_subscriptions (id TEXT PRIMARY KEY, endpoint TEXT UNIQUE NOT NULL,
+        payload TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+        """CREATE TABLE notification_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_key TEXT UNIQUE NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL,
+        body TEXT NOT NULL, url TEXT NOT NULL, created_at TEXT NOT NULL)""",
+        """CREATE TABLE notification_deliveries (notification_id INTEGER NOT NULL
+        REFERENCES notification_outbox(id) ON DELETE CASCADE, subscription_id TEXT NOT NULL
+        REFERENCES push_subscriptions(id) ON DELETE CASCADE, attempts INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending', next_attempt_at TEXT NOT NULL,
+        PRIMARY KEY(notification_id, subscription_id))""",
+        """CREATE INDEX notification_due ON notification_deliveries(status, next_attempt_at)""",
+        """CREATE TABLE queue_notification_predictions (session_id INTEGER PRIMARY KEY
+        REFERENCES queue_sessions(session_id), target_at TEXT NOT NULL,
+        observed_at TEXT NOT NULL)""",
+    ):
+        connection.execute(statement)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _bootstrap_metadata,
     _create_business_storage,
@@ -258,6 +278,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _create_shop_favorites,
     _create_queue_tracking,
     _create_automation,
+    _create_notifications,
 )
 
 

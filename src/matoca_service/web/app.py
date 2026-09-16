@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi import Path as PathParameter
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
@@ -20,6 +20,8 @@ from matoca_service.automation.repository import TaskConflictError
 from matoca_service.config import RuntimeSettings
 from matoca_service.console import MerchantConsoleData
 from matoca_service.matoca.models import Shop, Waiting
+from matoca_service.notifications.models import PushSubscription
+from matoca_service.notifications.service import NotificationService
 from matoca_service.service import (
     DashboardData,
     MatocaService,
@@ -119,6 +121,7 @@ def create_app(
     *,
     collection_coordinator: CollectionLifecycle | None = None,
     analytics_service: AnalyticsService | None = None,
+    notification_service: NotificationService | None = None,
 ) -> FastAPI:
     dashboard_service: DashboardService
     coordinator: CollectionLifecycle | None
@@ -135,6 +138,9 @@ def create_app(
         coordinator = collection_coordinator
     analytics = analytics_service or cast(AnalyticsService, dashboard_service)
     automation = cast(AutomationService, dashboard_service)
+    notifications = notification_service or (
+        dashboard_service.notifications if isinstance(dashboard_service, MatocaService) else None
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -155,9 +161,13 @@ def create_app(
         )
         if automatic is not None:
             automatic.start()
+        if notifications is not None:
+            notifications.dispatcher.start()
         try:
             yield
         finally:
+            if notifications is not None:
+                await notifications.dispatcher.stop()
             if automatic is not None:
                 await automatic.stop()
             if tracking is not None:
@@ -168,6 +178,85 @@ def create_app(
     app = FastAPI(title="Matoca", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=WEB_ROOT / "static"), name="static")
     templates = Jinja2Templates(directory=WEB_ROOT / "templates")
+
+    @app.get("/sw.js")
+    async def service_worker() -> FileResponse:
+        return FileResponse(
+            WEB_ROOT / "static" / "sw.js",
+            media_type="application/javascript",
+            headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
+        )
+
+    @app.get("/manifest.webmanifest")
+    async def manifest() -> FileResponse:
+        return FileResponse(
+            WEB_ROOT / "static" / "manifest.webmanifest", media_type="application/manifest+json"
+        )
+
+    def push_service() -> NotificationService:
+        if notifications is None:
+            raise HTTPException(503, "通知機能を利用できません")
+        return notifications
+
+    @app.get("/api/push/public-key")
+    async def push_public_key() -> dict[str, str | None]:
+        return {"public_key": await push_service().public_key()}
+
+    @app.post("/api/push/public-key")
+    async def push_enable_key(request: Request) -> dict[str, str | None]:
+        require_same_origin(request)
+        try:
+            return {
+                "public_key": await push_service().public_key(subject=request.headers["origin"])
+            }
+        except ValueError:
+            raise HTTPException(422, "通知を有効にするにはHTTPSで開いてください") from None
+
+    @app.post("/api/push/subscriptions", status_code=201)
+    async def push_subscribe(request: Request) -> dict[str, str]:
+        require_same_origin(request)
+        try:
+            subscription = PushSubscription.model_validate(await request.json())
+        except ValidationError, JSONDecodeError, UnicodeDecodeError:
+            raise HTTPException(422, "通知先の情報が不正です") from None
+        try:
+            return {"id": await push_service().subscribe(subscription)}
+        except LookupError:
+            raise HTTPException(409, "先に通知を有効にしてください") from None
+
+    async def push_field(request: Request, name: str) -> str:
+        try:
+            payload = await request.json()
+        except JSONDecodeError, UnicodeDecodeError:
+            raise HTTPException(422, "通知先の情報が不正です") from None
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {name}
+            or not isinstance(payload[name], str)
+            or not 0 < len(payload[name]) <= 4096
+        ):
+            raise HTTPException(422, "通知先の情報が不正です")
+        return cast(str, payload[name])
+
+    @app.delete("/api/push/subscriptions", status_code=204)
+    async def push_unsubscribe(request: Request) -> Response:
+        require_same_origin(request)
+        await push_service().unsubscribe(await push_field(request, "endpoint"))
+        return Response(status_code=204)
+
+    @app.post("/api/push/test", status_code=202)
+    async def push_test(request: Request) -> dict[str, str]:
+        require_same_origin(request)
+        identity = await push_field(request, "subscription_id")
+        try:
+            await push_service().test(identity)
+        except LookupError:
+            raise HTTPException(404, "このブラウザーの通知を有効にしてください") from None
+        return {"detail": "テスト通知を送信待ちに追加しました"}
+
+    @app.get("/api/push/history")
+    async def push_history() -> list[dict[str, object]]:
+        return [item.model_dump(mode="json") for item in await push_service().history()]
 
     @app.exception_handler(TaskConflictError)
     async def task_conflict_handler(request: Request, error: TaskConflictError) -> JSONResponse:

@@ -1,0 +1,11 @@
+.push-dialog { width:min(34rem, calc(100vw - 2rem)); max-height:85vh; overflow:auto; border:0; border-radius:1rem; padding:1.5rem; color:#23352f; }
+.push-dialog::backdrop { background:#102b2666; }
+.push-dialog p { line-height:1.65; }
+.push-actions { display:flex; flex-wrap:wrap; gap:.65rem; }
+.push-actions button, .push-access { padding:.7rem .9rem; border:1px solid #bdd1c7; border-radius:.6rem; background:#f3f8f5; color:#17543e; cursor:pointer; }
+.push-actions button:disabled { opacity:.5; cursor:default; }
+#push-close { float:right; border:0; background:transparent; font-size:1.5rem; cursor:pointer; }
+#push-history { padding-left:1.2rem; }
+#push-history li { margin-bottom:.8rem; }
+#push-history time { display:block; font-size:.8rem; }
+.app-header > .push-access { margin-left:auto; }
