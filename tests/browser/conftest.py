@@ -155,6 +155,8 @@ def browser_context_args(
         viewport = callspec.params["viewport"]
     if callspec is not None and "timezone_id" in callspec.params:
         args["timezone_id"] = callspec.params["timezone_id"]
+    else:
+        args["timezone_id"] = "Asia/Tokyo"
     args["viewport"] = {"width": viewport[0], "height": viewport[1]}
     args["service_workers"] = "block"
     return args

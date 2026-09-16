@@ -134,19 +134,21 @@ def test_browser_workflow_has_exact_safe_job_contract() -> None:
                     {
                         "name": "Run isolated browser tests",
                         "shell": "bash",
-                        "run": """mkdir -p test-results
+                        "run": """log_file=$(mktemp "${RUNNER_TEMP:-/tmp}/matoca-browser-pytest.XXXXXX.log")
 set +e
 set -o pipefail
 uv run --group browser pytest -m browser \\
   --tracing retain-on-failure \\
   --screenshot only-on-failure \\
-  --full-page-screenshot 2>&1 | tee test-results/pytest.log
+  --full-page-screenshot 2>&1 | tee "$log_file"
 status=${PIPESTATUS[0]}
+mkdir -p test-results
+cp "$log_file" test-results/pytest.log
 if (( status != 0 )); then
   echo \"::group::Browser pytest failure\"
-  tail -n 80 test-results/pytest.log
+  tail -n 80 "$log_file"
   echo \"::endgroup::\"
-  details=$(tail -n 80 test-results/pytest.log)
+  details=$(tail -n 80 "$log_file")
   details=${details//'%'/'%25'}
   details=${details//$'\\r'/'%0D'}
   details=${details//$'\\n'/'%0A'}
