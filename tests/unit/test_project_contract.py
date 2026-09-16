@@ -134,7 +134,8 @@ def test_browser_workflow_has_exact_safe_job_contract() -> None:
                     {
                         "name": "Run isolated browser tests",
                         "shell": "bash",
-                        "run": """log_file=$(mktemp "${RUNNER_TEMP:-/tmp}/matoca-browser-pytest.XXXXXX.log")
+                        "run": """log_pattern="${RUNNER_TEMP:-/tmp}/matoca-pytest.XXXXXX.log"
+log_file=$(mktemp "$log_pattern")
 set +e
 set -o pipefail
 uv run --group browser pytest -m browser \\
