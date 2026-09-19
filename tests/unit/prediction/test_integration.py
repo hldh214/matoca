@@ -158,6 +158,32 @@ async def test_history_enriches_only_exact_successful_observations(
 
 
 @pytest.mark.asyncio
+async def test_history_trends_are_as_of_day_end_or_now_and_storage_is_off_loop(
+    service: tuple[MatocaService, datetime], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    app, now = service
+    for minute in range(5):
+        save_observation(app, now - timedelta(minutes=4 - minute), minutes=30 - minute)
+    original = app._analytics.trend_summary
+
+    def checked(*args):
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            asyncio.get_running_loop()
+        return original(*args)
+
+    monkeypatch.setattr(app._analytics, "trend_summary", checked)
+    current = await app.shop_trend("sawayaka", 3272)
+    assert current.as_of == now
+    assert current.sample_count == 1
+    assert current.recent_change_minutes == -4
+    history = await app.shop_history("sawayaka", 3272, date(2026, 9, 14))
+    assert history.trend.as_of == datetime(2026, 9, 14, 14, 59, 59, 999999, tzinfo=UTC)
+    assert history.trend.sample_count == 0
+
+
+@pytest.mark.asyncio
 async def test_queues_enrich_only_fresh_active_exact_sessions(
     service: tuple[MatocaService, datetime],
 ) -> None:

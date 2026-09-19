@@ -3,9 +3,10 @@ import sqlite3
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Literal, TypeVar
+from zoneinfo import ZoneInfo
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -14,7 +15,14 @@ from pydantic_core import PydanticCustomError
 from matoca_service.analytics.models import FavoriteState, ShopHistory
 from matoca_service.analytics.repository import AnalyticsRepository
 from matoca_service.automation.coordinator import AutomationCoordinator
-from matoca_service.automation.models import AutomationRequest, AutomationTask
+from matoca_service.automation.decisions import TimingDecision
+from matoca_service.automation.models import (
+    AutomationEditContext,
+    AutomationEditRequest,
+    AutomationRequest,
+    AutomationTask,
+)
+from matoca_service.automation.replay import ReplayRequest, ReplayResult, replay
 from matoca_service.automation.repository import AutomationRepository
 from matoca_service.automation.runner import AutomationRunner
 from matoca_service.collection.coordinator import CollectionCoordinator
@@ -35,6 +43,7 @@ from matoca_service.notifications.service import NotificationService
 from matoca_service.prediction.model import remaining
 from matoca_service.prediction.models import Prediction
 from matoca_service.prediction.repository import PredictionRepository, PredictionService
+from matoca_service.prediction.trends import TrendSummary
 from matoca_service.state.store import JsonStateStore
 from matoca_service.storage.asyncio import run_storage
 from matoca_service.storage.database import Database
@@ -364,7 +373,15 @@ class MatocaService:
                     observation.observed_at,
                 )
             observations.append(observation.model_copy(update={"prediction": prediction}))
-        return history.model_copy(update={"observations": observations})
+        as_of = min(datetime.now(UTC), datetime.combine(day, time.max, ZoneInfo("Asia/Tokyo")))
+        trend = await run_storage(self._analytics.trend_summary, merchant_key, shop_id, as_of)
+        return history.model_copy(update={"observations": observations, "trend": trend})
+
+    async def shop_trend(self, merchant_key: str, shop_id: int) -> TrendSummary:
+        self._merchant(merchant_key)
+        return await run_storage(
+            self._analytics.trend_summary, merchant_key, shop_id, datetime.now(UTC)
+        )
 
     async def favorites(self) -> dict[str, list[int]]:
         return await run_storage(self._analytics.favorites)
@@ -657,6 +674,13 @@ class MatocaService:
     async def automation_tasks(self) -> list[AutomationTask]:
         return await run_storage(self._automation.list_tasks)
 
+    async def automation_history(self, task_id: str) -> list[TimingDecision]:
+        return await run_storage(self._automation.list_decisions, task_id)
+
+    async def automation_replay(self, request: ReplayRequest) -> ReplayResult:
+        self._merchant(request.merchant_key)
+        return await run_storage(replay, self._database, request, as_of=datetime.now(UTC))
+
     async def create_automation_task(self, request: AutomationRequest) -> AutomationTask:
         task = await self._automation_runner.create(request)
         self.automation_coordinator.wake()
@@ -664,6 +688,16 @@ class MatocaService:
 
     async def cancel_automation_task(self, task_id: str) -> AutomationTask:
         return await self._automation_runner.cancel(task_id)
+
+    async def automation_edit_context(self, task_id: str) -> AutomationEditContext:
+        return await self._automation_runner.edit_context(task_id)
+
+    async def edit_automation_task(
+        self, task_id: str, request: AutomationEditRequest
+    ) -> AutomationTask:
+        task = await self._automation_runner.edit(task_id, request)
+        self.automation_coordinator.wake()
+        return task
 
     async def resolve_automation_task(self, task_id: str) -> AutomationTask:
         return await self._automation_runner.resolve(task_id)

@@ -1,9 +1,15 @@
 import sqlite3
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import cast
 from zoneinfo import ZoneInfo
 
 from matoca_service.analytics.models import HistoryObservation, ShopHistory, ShopIdentity
+from matoca_service.prediction.trends import (
+    TrendObservation,
+    TrendSummary,
+    TrendTimeline,
+    build_pairs,
+)
 from matoca_service.storage.database import Database
 
 TOKYO = ZoneInfo("Asia/Tokyo")
@@ -12,6 +18,57 @@ TOKYO = ZoneInfo("Asia/Tokyo")
 class AnalyticsRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
+
+    def trend_timeline(self, merchant_key: str, start: datetime, end: datetime) -> TrendTimeline:
+        # Keep invalid intermediate rows: filtering them in SQL creates false pairs.
+        rows = self._database.read(
+            lambda connection: connection.execute(
+                """SELECT shop_id, observed_minute, waiting_minutes, waiting_is_more,
+                          list_fresh, detail_fresh, is_open, is_issuable,
+                          is_holiday, is_suspended, error_code
+                   FROM shop_observations WHERE merchant_key=?
+                     AND observed_minute>=? AND observed_minute<=?
+                   ORDER BY observed_minute, shop_id""",
+                (
+                    merchant_key,
+                    (start - timedelta(days=30)).astimezone(UTC).isoformat(),
+                    end.astimezone(UTC).isoformat(),
+                ),
+            ).fetchall()
+        )
+        return TrendTimeline(
+            build_pairs(
+                [
+                    TrendObservation(
+                        int(row[0]),
+                        datetime.fromisoformat(row[1]),
+                        row[2],
+                        bool(
+                            not row[3]
+                            and row[4]
+                            and row[5]
+                            and row[6]
+                            and row[7]
+                            and not row[8]
+                            and not row[9]
+                            and row[10] is None
+                        ),
+                    )
+                    for row in rows
+                ]
+            )
+        )
+
+    def trend_summary(self, merchant_key: str, shop_id: int, as_of: datetime) -> TrendSummary:
+        known = self._database.read(
+            lambda connection: connection.execute(
+                "SELECT 1 FROM shops WHERE merchant_key=? AND shop_id=?",
+                (merchant_key, shop_id),
+            ).fetchone()
+        )
+        if known is None:
+            raise LookupError(shop_id)
+        return self.trend_timeline(merchant_key, as_of, as_of).summary(shop_id, as_of)
 
     def shop_history(self, merchant_key: str, shop_id: int, day: date) -> ShopHistory:
         return self._database.read(

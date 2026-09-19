@@ -3,6 +3,7 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, StrictBool
 
 from matoca_service.prediction.models import Prediction
+from matoca_service.prediction.trends import TrendSummary
 
 
 class ShopIdentity(BaseModel):
@@ -31,6 +32,7 @@ class ShopHistory(BaseModel):
     day: date
     shop: ShopIdentity
     observations: list[HistoryObservation]
+    trend: TrendSummary | None = None
 
 
 class FavoriteUpdate(BaseModel):

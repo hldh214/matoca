@@ -1,13 +1,19 @@
-from datetime import date
+from datetime import UTC, date, datetime
 
 import httpx
 import pytest
 
 from matoca_service.analytics.models import FavoriteState, ShopHistory, ShopIdentity
+from matoca_service.prediction.trends import TrendSummary, TrendTimeline
 from matoca_service.web.app import create_app
 
 
 class AnalyticsFake:
+    async def shop_trend(self, merchant_key: str, shop_id: int) -> TrendSummary:
+        if shop_id == 9999:
+            raise LookupError(shop_id)
+        return TrendTimeline([]).summary(shop_id, datetime(2026, 9, 14, tzinfo=UTC))
+
     async def shop_history(self, merchant_key: str, shop_id: int, day: date) -> ShopHistory:
         return ShopHistory(
             day=day, shop=ShopIdentity(id=shop_id, name=merchant_key), observations=[]
@@ -42,8 +48,23 @@ async def test_analytics_routes_return_structured_history_and_favorites() -> Non
             "lng": None,
         },
         "observations": [],
+        "trend": None,
     }
     assert favorites.json() == {"sawayaka": [3272]}
+
+
+@pytest.mark.asyncio
+async def test_trend_route_returns_insufficient_evidence_and_unknown_shop() -> None:
+    app = create_app(object(), analytics_service=AnalyticsFake())  # type: ignore[arg-type]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/merchants/sawayaka/shops/3272/trend")
+        missing = await client.get("/api/merchants/sawayaka/shops/9999/trend")
+    assert response.status_code == 200
+    assert response.json()["suggested_addition_minutes"] is None
+    assert response.json()["sample_count"] == 0
+    assert missing.status_code == 404
 
 
 @pytest.mark.asyncio

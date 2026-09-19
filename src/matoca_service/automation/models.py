@@ -4,6 +4,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from matoca_service.matoca.models import Shop
+
 TaskState = Literal[
     "scheduled",
     "monitoring",
@@ -16,14 +18,13 @@ TaskState = Literal[
     "failed",
     "needs_attention",
     "unknown",
+    "simulated",
 ]
 
 
-class AutomationRequest(BaseModel):
+class AutomationValues(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    merchant_key: str
-    shop_id: int = Field(ge=1)
     arrival_at: datetime
     timezone: str = "Asia/Tokyo"
     adult_count: int = Field(default=2, ge=0, le=20)
@@ -52,6 +53,17 @@ class AutomationRequest(BaseModel):
         return value
 
 
+class AutomationRequest(AutomationValues):
+    merchant_key: str
+    mode: Literal["live", "simulation"] = Field(default="live", frozen=True)
+    shop_id: int = Field(ge=1)
+
+
+class AutomationEditRequest(AutomationValues):
+    expected_version: int = Field(ge=0, strict=True)
+    form_revision: str = Field(min_length=64, max_length=64)
+
+
 class AutomationTask(AutomationRequest):
     id: str
     shop_name: str
@@ -63,6 +75,13 @@ class AutomationTask(AutomationRequest):
     last_decision: str = "自動受付を有効にしました"
     evaluated_at: datetime | None = None
     next_evaluation_at: datetime | None = None
+
+
+class AutomationEditContext(BaseModel):
+    task: AutomationTask
+    shop: Shop
+    selections_compatible: bool
+    form_revision: str
 
 
 class AutomationEvent(BaseModel):

@@ -3,6 +3,7 @@ import sqlite3
 import uuid
 from datetime import UTC, datetime
 
+from matoca_service.automation.decisions import TimingDecision
 from matoca_service.automation.models import (
     AutomationEvent,
     AutomationRequest,
@@ -63,7 +64,11 @@ class AutomationRepository:
             "INSERT INTO automation_events (task_id, at, state, decision) VALUES (?, ?, ?, ?)",
             (task_id, now.astimezone(UTC).isoformat(), state, decision),
         )
-        task_event(connection, task_id, state, now)
+        row = connection.execute(
+            "SELECT payload FROM automation_tasks WHERE id=?", (task_id,)
+        ).fetchone()
+        if json.loads(row[0]).get("mode", "live") == "live":
+            task_event(connection, task_id, state, now)
 
     def list_tasks(self) -> list[AutomationTask]:
         def read(connection: sqlite3.Connection) -> list[AutomationTask]:
@@ -148,8 +153,37 @@ class AutomationRepository:
         )
         return self.get(task.id)
 
+    def edit(
+        self, task: AutomationTask, request: AutomationRequest, signature: str, now: datetime
+    ) -> AutomationTask:
+        if (request.merchant_key, request.shop_id, request.mode) != (
+            task.merchant_key,
+            task.shop_id,
+            task.mode,
+        ):
+            raise TaskConflictError("加盟店・店舗・実行方法は変更できません")
+        decision = "設定を更新しました。新しい内容で再評価します"
+        payload = task.model_copy(update=request.model_dump()).model_dump_json()
+
+        def write(connection: sqlite3.Connection) -> None:
+            cursor = connection.execute(
+                """UPDATE automation_tasks SET payload=?, form_signature=?, state='scheduled',
+                version=version+1, last_decision=?, next_evaluation_at=?
+                WHERE id=? AND version=? AND intent_id IS NULL
+                AND state IN ('scheduled', 'monitoring', 'needs_attention')""",
+                (payload, signature, decision, now.isoformat(), task.id, task.version),
+            )
+            if cursor.rowcount != 1:
+                raise TaskConflictError(
+                    "状態が変わりました。入力を保持して最新情報を確認してください"
+                )
+            self._event(connection, task.id, now, "scheduled", decision)
+
+        self._database.write(write)
+        return self.get(task.id)
+
     def begin_submission(self, task: AutomationTask, intent: QueueIntent) -> None:
-        if task.state not in {"scheduled", "monitoring"}:
+        if task.mode != "live" or task.state not in {"scheduled", "monitoring"}:
             raise TaskConflictError("この自動受付は送信できません")
         QueueRepository(self._database).begin_intent(
             intent,
@@ -161,6 +195,27 @@ class AutomationRepository:
                 intent.submitted_at,
                 intent_id=intent.intent_id,
             ),
+        )
+
+    def record_decision(self, task_id: str, decision: TimingDecision) -> None:
+        self._database.write(
+            lambda connection: connection.execute(
+                "INSERT INTO automation_decisions (task_id, evaluated_at, payload) "
+                "VALUES (?, ?, ?)",
+                (task_id, decision.evaluated_at.isoformat(), decision.model_dump_json()),
+            )
+        )
+
+    def list_decisions(self, task_id: str) -> list[TimingDecision]:
+        self.get(task_id)
+        return self._database.read(
+            lambda connection: [
+                TimingDecision.model_validate_json(row[0])
+                for row in connection.execute(
+                    "SELECT payload FROM automation_decisions WHERE task_id=? ORDER BY id",
+                    (task_id,),
+                )
+            ]
         )
 
     def intent_status(self, intent_id: str) -> str | None:

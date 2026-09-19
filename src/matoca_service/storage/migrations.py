@@ -269,6 +269,16 @@ def _create_notifications(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _create_automation_decisions(connection: sqlite3.Connection) -> None:
+    connection.execute("""CREATE TABLE automation_decisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id TEXT NOT NULL REFERENCES automation_tasks(id),
+        evaluated_at TEXT NOT NULL, payload TEXT NOT NULL)""")
+    connection.execute(
+        "CREATE INDEX automation_decisions_task ON automation_decisions(task_id, id)"
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _bootstrap_metadata,
     _create_business_storage,
@@ -279,6 +289,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _create_queue_tracking,
     _create_automation,
     _create_notifications,
+    _create_automation_decisions,
 )
 
 

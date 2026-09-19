@@ -54,6 +54,14 @@ export class MatocaApi {
   createWaiting(body) { return this.request(`${this.base}/waiting`, "POST", body); }
   cancelWaiting(id) { return this.request(`${this.base}/waiting/${encodeURIComponent(id)}`, "DELETE"); }
   automationTasks() { return this.request("/api/automation/tasks"); }
+  automationHistory(id) { return this.request(`/api/automation/tasks/${encodeURIComponent(id)}/history`); }
+  automationEditContext(id) { return this.request(`/api/automation/tasks/${encodeURIComponent(id)}/edit`); }
+  editAutomation(id, body) { return this.request(`/api/automation/tasks/${encodeURIComponent(id)}`, "PUT", body); }
+  replay(shopId, day, arrival, early, error) {
+    const params = new URLSearchParams({merchant_key: decodeURIComponent(this.merchantKey), shop_id: shopId,
+      day, arrival_at: arrival, early_tolerance_minutes: early, model_error_minutes: error});
+    return this.request(`/api/automation/replay?${params}`);
+  }
   createAutomation(body) { return this.request("/api/automation/tasks", "POST", {...body, merchant_key: decodeURIComponent(this.merchantKey)}); }
   cancelAutomation(id) { return this.request(`/api/automation/tasks/${encodeURIComponent(id)}`, "DELETE"); }
   resolveAutomation(id) { return this.request(`/api/automation/tasks/${encodeURIComponent(id)}/resolve`, "POST", {confirm_no_queue: true}); }
@@ -64,4 +72,5 @@ export class MatocaApi {
   favorites() { return this.request("/api/favorites"); }
   setFavorite(id, enabled) { return this.request(`${this.base}/shops/${encodeURIComponent(id)}/favorite`, "PUT", {enabled}); }
   shopHistory(id, day) { return this.request(`${this.base}/shops/${encodeURIComponent(id)}/history?day=${encodeURIComponent(day)}`); }
+  shopTrend(id) { return this.request(`${this.base}/shops/${encodeURIComponent(id)}/trend`); }
 }

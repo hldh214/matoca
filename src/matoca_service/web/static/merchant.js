@@ -11,7 +11,7 @@ const preferences = new PreferencesDialog(document, api);
 const queue = new QueueStatus(document, api, render, reload);
 const join = new JoinForm(document, api, preferences, queue, reload);
 const history = new ShopHistoryDialog(document, api);
-const automation = new AutomationPanel(document, api, reload);
+const automation = new AutomationPanel(document, api, reload, (task) => join.openEdit(task));
 const favorites = new Set();
 const pendingFavorites = new Set();
 const list = new ShopList(document, (shop) => join.open(shop), toggleFavorite,

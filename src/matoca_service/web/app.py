@@ -15,13 +15,21 @@ from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from matoca_service.analytics.models import FavoriteState, FavoriteUpdate, ShopHistory
-from matoca_service.automation.models import AutomationRequest, AutomationTask
+from matoca_service.automation.decisions import TimingDecision
+from matoca_service.automation.models import (
+    AutomationEditContext,
+    AutomationEditRequest,
+    AutomationRequest,
+    AutomationTask,
+)
+from matoca_service.automation.replay import ReplayRequest, ReplayResult
 from matoca_service.automation.repository import TaskConflictError
 from matoca_service.config import RuntimeSettings
 from matoca_service.console import MerchantConsoleData
 from matoca_service.matoca.models import Shop, Waiting
 from matoca_service.notifications.models import PushSubscription
 from matoca_service.notifications.service import NotificationService
+from matoca_service.prediction.trends import TrendSummary
 from matoca_service.service import (
     DashboardData,
     MatocaService,
@@ -101,6 +109,7 @@ class CollectionLifecycle(Protocol):
 
 
 class AnalyticsService(Protocol):
+    async def shop_trend(self, merchant_key: str, shop_id: int) -> TrendSummary: ...
     async def shop_history(self, merchant_key: str, shop_id: int, day: date) -> ShopHistory: ...
     async def favorites(self) -> dict[str, list[int]]: ...
     async def set_favorite(
@@ -109,8 +118,14 @@ class AnalyticsService(Protocol):
 
 
 class AutomationService(Protocol):
+    async def automation_history(self, task_id: str) -> list[TimingDecision]: ...
+    async def automation_replay(self, request: ReplayRequest) -> ReplayResult: ...
     async def automation_tasks(self) -> list[AutomationTask]: ...
     async def create_automation_task(self, request: AutomationRequest) -> AutomationTask: ...
+    async def automation_edit_context(self, task_id: str) -> AutomationEditContext: ...
+    async def edit_automation_task(
+        self, task_id: str, request: AutomationEditRequest
+    ) -> AutomationTask: ...
     async def cancel_automation_task(self, task_id: str) -> AutomationTask: ...
     async def resolve_automation_task(self, task_id: str) -> AutomationTask: ...
     async def resolve_manual_intent(self, intent_id: str) -> None: ...
@@ -266,6 +281,26 @@ def create_app(
     async def automation_tasks_api() -> list[AutomationTask]:
         return await automation.automation_tasks()
 
+    @app.get("/api/automation/tasks/{task_id}/history", response_model=list[TimingDecision])
+    async def automation_history_api(task_id: str) -> list[TimingDecision]:
+        try:
+            return await automation.automation_history(task_id)
+        except LookupError as error:
+            raise HTTPException(404, "自動受付が見つかりません") from error
+
+    @app.get("/api/automation/replay", response_model=ReplayResult)
+    async def automation_replay_api(request: Request) -> ReplayResult | JSONResponse:
+        try:
+            payload = ReplayRequest.model_validate(dict(request.query_params))
+        except ValidationError:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": "加盟店・店舗・日本時間の日付・時差を含む到着予定を確認してください"
+                },
+            )
+        return await automation.automation_replay(payload)
+
     @app.post("/api/automation/tasks", response_model=AutomationTask, status_code=201)
     async def create_automation_api(request: Request) -> AutomationTask | JSONResponse:
         require_same_origin(request)
@@ -276,6 +311,31 @@ def create_app(
                 status_code=422, content={"detail": "到着予定・人数・同意内容を確認してください"}
             )
         return await automation.create_automation_task(payload)
+
+    @app.get("/api/automation/tasks/{task_id}/edit", response_model=AutomationEditContext)
+    async def automation_edit_context_api(task_id: str) -> AutomationEditContext:
+        try:
+            return await automation.automation_edit_context(task_id)
+        except LookupError as error:
+            raise HTTPException(404, "自動受付が見つかりません") from error
+
+    @app.put("/api/automation/tasks/{task_id}", response_model=AutomationTask)
+    async def edit_automation_api(task_id: str, request: Request) -> AutomationTask | JSONResponse:
+        require_same_origin(request)
+        try:
+            payload = AutomationEditRequest.model_validate(await request.json())
+        except JSONDecodeError, UnicodeDecodeError, ValidationError:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": "到着予定・人数・同意内容を確認してください。"
+                    "加盟店・店舗・実行方法は変更できません"
+                },
+            )
+        try:
+            return await automation.edit_automation_task(task_id, payload)
+        except LookupError as error:
+            raise HTTPException(404, "自動受付が見つかりません") from error
 
     @app.delete("/api/automation/tasks/{task_id}", response_model=AutomationTask)
     async def cancel_automation_api(task_id: str, request: Request) -> AutomationTask:
@@ -409,6 +469,13 @@ def create_app(
     ) -> ShopHistory:
         try:
             return await analytics.shop_history(merchant_key, shop_id, day)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail="店舗が見つかりません") from error
+
+    @app.get("/api/merchants/{merchant_key}/shops/{shop_id}/trend", response_model=TrendSummary)
+    async def shop_trend_api(merchant_key: str, shop_id: int = PathParameter(ge=1)) -> TrendSummary:
+        try:
+            return await analytics.shop_trend(merchant_key, shop_id)
         except LookupError as error:
             raise HTTPException(status_code=404, detail="店舗が見つかりません") from error
 

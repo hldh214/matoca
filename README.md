@@ -111,6 +111,39 @@ not cancel an already-issued ticket; use the separate queue cancellation operati
 Restart recovery follows the durable task/intent/session linkage without replaying
 ambiguous submissions. Changed forms or uncertain reads may require attention.
 
+Choose `シミュレーション` to observe the same timing conditions without submitting
+a queue request. A simulation records its decisions and ends when it first meets
+the conditions; it cannot be converted into a live task. Existing tasks remain live.
+The task panel exposes recorded estimates, timestamps and decision reasons.
+
+The shop history dialog also replays timing against stored observations for a
+selected Japanese date and arrival time. Replay only uses information available
+at each observation. It cannot reconstruct historical forms or account queues,
+so its results describe timing conditions, not successful reception or actual call
+accuracy. Missing and failed observations do not count as successful checks.
+
+Before arrival, automatic reception requires a fresh exact estimate. From arrival
+through the two-minute grace period, fresh account, availability and compatible
+form checks can permit reception even when the estimate is missing or a lower
+bound. No developer verification creates real tickets; the remaining actual-visit
+checklist is in [core validation](docs/validation/2026-09-19-core-validation.md).
+
+Historical official-estimate trends are separate from actual-wait predictions.
+The UI summarizes downward revisions over nonoverlapping intervals of about five
+minutes, using the past 30 days and explicitly labeled shop/time or merchant
+fallbacks. Failed, stale, closed, lower-bound and zero-estimate intervals are
+excluded. A suggested additional margin needs at least 20 eligible intervals;
+use the apply button to add it to the current form, capped at 120 minutes. Saved
+tasks and preferences are never changed automatically. Replay can compare the
+fixed margin with the suggestion available at each historical timestamp.
+
+Tasks that have not begun submission can be edited from the task panel. Editing
+preserves their merchant, shop, execution mode and recorded history; arrival,
+party, answers and margins are revalidated against the fresh shop form. Saved
+values are prefilled and consent is confirmed again. If background evaluation or
+submission changes the task while the dialog is open, saving reports a conflict
+and keeps the entered values for review. Submitted tasks cannot be edited.
+
 ## Browser notifications
 
 Open the HTTPS UI. On the homepage select `通知の設定`; on merchant pages open the

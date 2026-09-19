@@ -1,10 +1,10 @@
-const labels = {scheduled: "評価待ち", monitoring: "監視中", submitting: "受付送信中",
+const labels = {simulated: "条件成立・申込なし", scheduled: "評価待ち", monitoring: "監視中", submitting: "受付送信中",
   reconciling: "受付結果を照合中", queued: "受付済み", completed: "呼び出し確認済み",
   cancelled: "終了", expired: "期限終了", failed: "受付失敗", needs_attention: "確認が必要", unknown: "結果不明"};
 
 export class AutomationPanel {
-  constructor(document, api, onMutation) {
-    Object.assign(this, {document, api, onMutation});
+  constructor(document, api, onMutation, onEdit) {
+    Object.assign(this, {document, api, onMutation, onEdit});
     this.target = document.querySelector("#automation-tasks");
     this.revision = 0;
     this.busy = new Set();
@@ -29,6 +29,7 @@ export class AutomationPanel {
       item.className = "automation-task";
       const title = this.document.createElement("strong");
       title.textContent = `${task.shop_name}・${labels[task.state] || "状態を確認中"}`;
+      if (task.mode === "simulation") title.textContent = `シミュレーション・${title.textContent}`;
       const timing = this.document.createElement("p");
       const time = (value) => value ? new Date(value).toLocaleString("ja-JP") : "—";
       timing.textContent = `到着予定 ${time(task.arrival_at)}・評価 ${time(task.evaluated_at)}・次回評価 ${time(task.next_evaluation_at)}`;
@@ -38,8 +39,41 @@ export class AutomationPanel {
       error.className = "form-error";
       error.setAttribute("role", "alert");
       item.append(title, timing, decision);
+      const history = this.document.createElement("details");
+      const summary = this.document.createElement("summary");
+      summary.textContent = "判断履歴を見る";
+      const records = this.document.createElement("div");
+      history.append(summary, records);
+      history.addEventListener("toggle", async () => {
+        if (!history.open) return;
+        records.textContent = "読み込み中です";
+        try {
+          const rows = await this.api.automationHistory(task.id);
+          records.replaceChildren();
+          if (!rows.length) records.textContent = "評価記録はまだありません";
+          for (const row of rows) {
+            const text = this.document.createElement("p");
+            text.textContent = `${time(row.evaluated_at)}・${row.reason}・条件成立 ${row.would_submit ? "はい" : "いいえ"}・最新確認 ${row.fresh ? "有効" : "期限切れ"}・公式 ${row.official_minutes ?? "不明"}${row.official_minutes === null ? "" : "分"}${row.official_is_more ? "以上" : ""}・予測 ${row.prediction ? `${row.prediction.fast_minutes}〜${row.prediction.typical_minutes}分` : "なし"}・早着許容 ${row.early_tolerance_minutes}分・予測誤差 ${row.model_error_minutes}分`;
+            records.append(text);
+          }
+        } catch { records.textContent = "判断履歴を取得できませんでした"; }
+      });
+      item.append(history);
       const cancellable = !task.intent_id && ["scheduled", "monitoring", "needs_attention"].includes(task.state);
       const resolvable = task.intent_id && ["needs_attention", "reconciling", "submitting"].includes(task.state);
+      if (cancellable) {
+        const edit = this.document.createElement("button");
+        edit.type = "button";
+        edit.className = "history-button";
+        edit.textContent = "設定を編集";
+        edit.addEventListener("click", async () => {
+          edit.disabled = true;
+          try { await this.onEdit(task); }
+          catch (failure) { error.textContent = failure.detail || "編集内容を取得できませんでした"; }
+          finally { edit.disabled = false; }
+        });
+        item.append(edit);
+      }
       if (cancellable || resolvable) {
         const button = this.document.createElement("button");
         button.type = "button";

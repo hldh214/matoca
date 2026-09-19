@@ -1,11 +1,19 @@
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from typing import TYPE_CHECKING
 
-from matoca_service.automation.models import AutomationRequest, AutomationTask, TaskState
+from matoca_service.automation.decisions import TimingDecision, evaluate_timing
+from matoca_service.automation.models import (
+    AutomationEditContext,
+    AutomationEditRequest,
+    AutomationRequest,
+    AutomationTask,
+    TaskState,
+)
 from matoca_service.automation.repository import AutomationRepository, TaskConflictError
-from matoca_service.matoca.models import Shop
+from matoca_service.matoca.models import Shop, ShopForms
 from matoca_service.storage.asyncio import run_storage
 
 if TYPE_CHECKING:
@@ -16,6 +24,134 @@ def form_signature(shop: Shop) -> str:
     if shop.forms is None:
         raise TaskConflictError("受付に必要な情報を取得できませんでした")
     return json.dumps(shop.forms.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
+
+
+def form_revision(shop: Shop) -> str:
+    """Bind the visible choices and limits, excluding defaults and decoration."""
+    if shop.forms is None:
+        raise TaskConflictError("受付に必要な情報を取得できませんでした")
+    forms = shop.forms.model_dump()
+    visible = {
+        key: forms.get(key)
+        for key in (
+            "min_adult",
+            "max_adult",
+            "min_child",
+            "max_child",
+            "is_ticketing_only",
+            "is_confirm_tel",
+            "is_confirm_child",
+        )
+    }
+    items = forms.get("confirm_items") or []
+    visible["confirm_items"] = (
+        [
+            {
+                "enable": item.get("enable"),
+                "title": item.get("title"),
+                "sub_items": [
+                    {
+                        key: option.get(key)
+                        for key in ("enable", "disabled", "sub_item_index", "text")
+                    }
+                    if isinstance(option, dict)
+                    else option
+                    for option in item.get("sub_items", [])
+                ],
+            }
+            if isinstance(item, dict) and isinstance(item.get("sub_items"), list)
+            else item
+            for item in items
+        ]
+        if isinstance(items, list)
+        else items
+    )
+    return sha256(json.dumps(visible, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def form_matches(
+    task: AutomationRequest, shop: Shop, *, saved_signature: str | None = None
+) -> bool:
+    """Compare selected meanings, including signatures stored by older releases."""
+    if shop.forms is None:
+        return False
+
+    def unsupported(value: object, *, input_context: bool = False) -> bool:
+        if isinstance(value, list):
+            return any(unsupported(item, input_context=input_context) for item in value)
+        if isinstance(value, dict):
+            return (
+                value.get("required") is True
+                or (input_context and value.get("enable") is True)
+                or any(unknown_input(key, item) for key, item in value.items())
+            )
+        return False
+
+    def unknown_input(key: str, value: object) -> bool:
+        return (key.startswith(("is_confirm_", "is_required_")) and value is True) or unsupported(
+            value, input_context=any(word in key for word in ("input", "field", "confirm"))
+        )
+
+    def check_extras(value: dict[str, object], known: set[str]) -> None:
+        if any(unknown_input(key, item) for key, item in value.items() if key not in known):
+            raise ValueError("unsupported required input")
+
+    def semantics(form: dict[str, object]) -> object:
+        items = form.get("confirm_items") or []
+        if not isinstance(items, list):
+            raise ValueError("invalid confirmation")
+        selected = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict) or type(item.get("enable")) is not bool:
+                raise ValueError("invalid confirmation")
+            if not item["enable"]:
+                continue
+            if index > 1:
+                raise ValueError("unsupported confirmation")
+            check_extras(item, {"enable", "title", "sub_items"})
+            answer = task.answer1 if index == 0 else task.answer2
+            options = item.get("sub_items")
+            if not isinstance(options, list):
+                raise ValueError("invalid options")
+            for entry in options:
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("enable") is True
+                    and not entry.get("disabled")
+                ):
+                    check_extras(entry, {"enable", "disabled", "sub_item_index", "text"})
+            option = next(
+                (
+                    entry
+                    for entry in options
+                    if isinstance(entry, dict)
+                    and entry.get("sub_item_index") == answer
+                    and entry.get("enable") is True
+                    and not entry.get("disabled")
+                ),
+                None,
+            )
+            if option is None:
+                raise ValueError("selected option removed")
+            selected.append((index, item.get("title"), answer, option.get("text")))
+        known = set(ShopForms.model_fields) | {"confirm_items"}
+        check_extras(form, known)
+        return (
+            form.get("is_ticketing_only", False),
+            form.get("is_confirm_tel", False),
+            form.get("is_confirm_child", False),
+            selected,
+        )
+
+    try:
+        signature = (
+            saved_signature
+            if saved_signature is not None
+            else (task.form_signature if isinstance(task, AutomationTask) else form_signature(shop))
+        )
+        return semantics(json.loads(signature)) == semantics(shop.forms.model_dump())
+    except ValueError, TypeError:
+        return False
 
 
 class DeferredDecision(Exception):
@@ -36,7 +172,7 @@ class AutomationRunner:
         self.repository = repository
         self.now = now
 
-    async def create(self, request: AutomationRequest) -> AutomationTask:
+    def _validate_request(self, request: AutomationRequest, shop: Shop) -> None:
         from matoca_service.service import (
             QueueSubmission,
             QueueUnavailableError,
@@ -45,7 +181,6 @@ class AutomationRunner:
 
         if request.arrival_at <= self.now():
             raise QueueUnavailableError("到着予定は未来の日時を指定してください")
-        shop = await self.service.shop_detail(request.merchant_key, request.shop_id)
         submission = QueueSubmission.model_validate(
             request.model_dump(
                 include={
@@ -73,6 +208,10 @@ class AutomationRunner:
         )
         if request.arrival_at <= self.now():
             raise QueueUnavailableError("到着予定は未来の日時を指定してください")
+
+    async def create(self, request: AutomationRequest) -> AutomationTask:
+        shop = await self.service.shop_detail(request.merchant_key, request.shop_id)
+        self._validate_request(request, shop)
         task = await run_storage(
             self.repository.create,
             request,
@@ -82,6 +221,64 @@ class AutomationRunner:
         )
         self.service.collection_coordinator.wake(request.merchant_key)
         return task
+
+    @staticmethod
+    def _editable(task: AutomationTask, expected_version: int | None = None) -> None:
+        if (
+            task.state not in {"scheduled", "monitoring", "needs_attention"}
+            or task.intent_id is not None
+            or (expected_version is not None and task.version != expected_version)
+        ):
+            raise TaskConflictError("状態が変わりました。入力を保持して最新情報を確認してください")
+
+    async def _edit_shop(self, task: AutomationTask) -> Shop:
+        lat, lng = await run_storage(
+            self.service._stored_shop_coordinates, task.merchant_key, task.shop_id
+        )
+        return await self.service._authenticated_read(
+            task.merchant_key, lambda client: client.get_shop(task.shop_id, lat=lat, lng=lng)
+        )
+
+    async def edit_context(self, task_id: str) -> AutomationEditContext:
+        async with self.service._operation_lock:
+            task = await run_storage(self.repository.get, task_id)
+            self._editable(task)
+            shop = await self._edit_shop(task)
+            task = await run_storage(self.repository.get, task_id)
+            self._editable(task)
+            return AutomationEditContext(
+                task=task,
+                shop=shop,
+                selections_compatible=form_matches(task, shop),
+                form_revision=form_revision(shop),
+            )
+
+    async def edit(self, task_id: str, edit: AutomationEditRequest) -> AutomationTask:
+        async with self.service._operation_lock:
+            task = await run_storage(self.repository.get, task_id)
+            self._editable(task, edit.expected_version)
+            shop = await self._edit_shop(task)
+            signature = form_signature(shop)
+            if form_revision(shop) != edit.form_revision:
+                raise TaskConflictError(
+                    "受付の質問が変わりました。最新情報を読み込み、選択を確認してください"
+                )
+            request = AutomationRequest(
+                merchant_key=task.merchant_key,
+                shop_id=task.shop_id,
+                mode=task.mode,
+                **edit.model_dump(exclude={"expected_version", "form_revision"}),
+            )
+            task = await run_storage(self.repository.get, task_id)
+            self._editable(task, edit.expected_version)
+            self._validate_request(request, shop)
+            if not form_matches(request, shop, saved_signature=signature):
+                raise TaskConflictError(
+                    "対応できない確認項目があります。店舗の受付内容を確認してください"
+                )
+            updated = await run_storage(self.repository.edit, task, request, signature, self.now())
+        self.service.collection_coordinator.wake(task.merchant_key)
+        return updated
 
     async def cancel(self, task_id: str) -> AutomationTask:
         async with self.service._operation_lock:
@@ -133,6 +330,23 @@ class AutomationRunner:
             or (state == "needs_attention" and task.intent_id is not None)
             else None,
         )
+
+    async def _record_blocked(
+        self, task: AutomationTask, reason_code: str, reason: str, checked_at: datetime
+    ) -> None:
+        evidence = evaluate_timing(
+            evaluated_at=self.now(),
+            checked_at=checked_at,
+            arrival_at=task.arrival_at,
+            official_minutes=None,
+            official_is_more=False,
+            prediction=None,
+            early_tolerance_minutes=task.early_tolerance_minutes,
+            model_error_minutes=task.model_error_minutes,
+            available=False,
+            observation_fresh=reason_code not in {"read_error", "expired"},
+        ).model_copy(update={"reason_code": reason_code, "reason": reason, "would_submit": False})
+        await run_storage(self.repository.record_decision, task.id, evidence)
 
     async def _recover(self, task: AutomationTask) -> None:
         assert task.intent_id is not None
@@ -191,6 +405,7 @@ class AutomationRunner:
         if task.state not in {"scheduled", "monitoring"}:
             return
         if self.now() > task.arrival_at + timedelta(minutes=2):
+            await self._record_blocked(task, "expired", "到着予定から2分を過ぎました", self.now())
             await self._record(
                 task, "expired", "到着予定から2分を過ぎたため、自動受付を終了しました"
             )
@@ -209,46 +424,41 @@ class AutomationRunner:
         )
 
         checks_started = self.now()
+        evidence: TimingDecision | None = None
 
         async def check(shop: Shop) -> None:
+            nonlocal evidence
             now = self.now()
-            if now > task.arrival_at + timedelta(minutes=2):
-                raise DeferredDecision(
-                    "expired", "到着予定から2分を過ぎたため、自動受付を終了しました"
-                )
-            if form_signature(shop) != task.form_signature:
+            if not form_matches(task, shop):
                 raise DeferredDecision(
                     "needs_attention", "受付フォームが変更されました。選択内容の確認が必要です"
                 )
             estimate = shop.waiting_time
-            if estimate is None or estimate.is_more or estimate.minutes < 0:
-                raise DeferredDecision(
-                    "expired" if now >= task.arrival_at else "monitoring",
-                    "最新の正確な待ち時間を取得できないため、受付を保留しました",
+            prediction = None
+            if (
+                now < task.arrival_at
+                and estimate is not None
+                and not estimate.is_more
+                and estimate.minutes >= 0
+            ):
+                prediction = await self.service.predict(
+                    task.merchant_key, task.shop_id, estimate.minutes, now
                 )
-            prediction = await self.service.predict(
-                task.merchant_key, task.shop_id, estimate.minutes, now
+            evidence = evaluate_timing(
+                evaluated_at=self.now(),
+                checked_at=checks_started,
+                arrival_at=task.arrival_at,
+                official_minutes=estimate.minutes if estimate else None,
+                official_is_more=estimate.is_more if estimate else False,
+                prediction=prediction,
+                early_tolerance_minutes=task.early_tolerance_minutes,
+                model_error_minutes=task.model_error_minutes,
             )
-            now = self.now()
-            if now > task.arrival_at + timedelta(minutes=2):
+            await run_storage(self.repository.record_decision, task.id, evidence)
+            if not evidence.would_submit:
                 raise DeferredDecision(
-                    "expired", "到着予定から2分を過ぎたため、自動受付を終了しました"
-                )
-            if prediction is None:
-                raise DeferredDecision(
-                    "expired" if now >= task.arrival_at else "monitoring",
-                    "予測を確認できないため、受付を保留しました",
-                )
-            if now - checks_started > timedelta(minutes=1):
-                raise DeferredDecision(
-                    "expired" if now >= task.arrival_at else "monitoring",
-                    "直前の確認から1分を過ぎたため、最新情報を再確認します",
-                )
-            if now + timedelta(
-                minutes=max(0, prediction.fast_minutes - task.model_error_minutes)
-            ) < task.arrival_at - timedelta(minutes=task.early_tolerance_minutes):
-                raise DeferredDecision(
-                    "monitoring", "早く呼ばれる可能性があるため、次回の評価を待っています"
+                    "expired" if evidence.reason_code == "expired" else "monitoring",
+                    evidence.reason,
                 )
 
         def authorize_send() -> None:
@@ -262,6 +472,36 @@ class AutomationRunner:
                 )
 
         try:
+            if task.mode == "simulation":
+                from matoca_service.service import validate_queue_submission
+
+                # Only authenticated reads: never enter the real submission/intents path.
+                if await run_storage(self.service._queues.list_unfinished_intents):
+                    raise QueueUnavailableError(
+                        "受付結果が不明な申込があります。現在の受付を確認してください"
+                    )
+                for key in self.service._registry.merchants:
+                    waiting = await self.service._authenticated_read(
+                        key, lambda client: client.list_waiting()
+                    )
+                    if waiting:
+                        raise QueueUnavailableError("すでに受付中の順番待ちがあります")
+                lat, lng = await run_storage(
+                    self.service._stored_shop_coordinates, task.merchant_key, task.shop_id
+                )
+                shop = await self.service._authenticated_read(
+                    task.merchant_key,
+                    lambda client: client.get_shop(task.shop_id, lat=lat, lng=lng),
+                )
+                validate_queue_submission(shop, submission, [])
+                await check(shop)
+                authorize_send()
+                await self._record(
+                    task,
+                    "simulated",
+                    "シミュレーション: 受付条件を満たしました。実際の申込は行っていません",
+                )
+                return
             await self.service._create_waiting_unlocked(
                 task.merchant_key,
                 submission,
@@ -271,12 +511,15 @@ class AutomationRunner:
                 source="automation",
             )
         except DeferredDecision as decision:
+            if evidence is None or evidence.would_submit:
+                await self._record_blocked(task, decision.state, decision.decision, checks_started)
             current = await run_storage(self.repository.get, task.id)
             await self._record(current, decision.state, decision.decision)
         except QueueOutcomeUnknownError:
             current = await run_storage(self.repository.get, task.id)
             await self._record(current, "reconciling", "受付結果を照合中です。自動で再送しません")
         except (QueueUnavailableError, TaskConflictError) as error:
+            await self._record_blocked(task, "checks_failed", str(error), checks_started)
             current = await run_storage(self.repository.get, task.id)
             if current.intent_id:
                 await self._recover(current)
@@ -291,6 +534,9 @@ class AutomationRunner:
                 )
                 await self._record(current, state, str(error))
         except Exception:
+            await self._record_blocked(
+                task, "read_error", "最新情報を確認できません", checks_started
+            )
             current = await run_storage(self.repository.get, task.id)
             await self._record(
                 current,

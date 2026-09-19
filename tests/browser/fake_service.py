@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from matoca_service.analytics.models import (
     FavoriteState,
@@ -7,10 +7,20 @@ from matoca_service.analytics.models import (
     ShopHistory,
     ShopIdentity,
 )
-from matoca_service.automation.models import AutomationRequest, AutomationTask
+from matoca_service.automation.decisions import TimingDecision
+from matoca_service.automation.models import (
+    AutomationEditContext,
+    AutomationEditRequest,
+    AutomationRequest,
+    AutomationTask,
+)
+from matoca_service.automation.replay import ReplayComparison, ReplayRequest, ReplayResult
+from matoca_service.automation.repository import TaskConflictError
+from matoca_service.automation.runner import form_matches, form_revision, form_signature
 from matoca_service.console import MerchantConsoleData, MerchantSummary, ShopConsoleItem
 from matoca_service.matoca.models import Shop, ShopForms, Waiting
 from matoca_service.prediction.models import Prediction
+from matoca_service.prediction.trends import TrendPair, TrendSummary, TrendTimeline
 from matoca_service.service import (
     DashboardData,
     MerchantSnapshot,
@@ -25,6 +35,7 @@ FIXED_NOW = datetime(2026, 9, 10, 8, tzinfo=UTC)
 
 class BrowserFakeService:
     def __init__(self) -> None:
+        self.trend_sample_count = 20
         self.preferences = PartyPreferences(default_adult_count=2, default_child_count=0)
         self.submissions: list[QueueSubmission] = []
         self.automation_requests: list[AutomationRequest] = []
@@ -127,6 +138,46 @@ class BrowserFakeService:
     async def automation_tasks(self) -> list[AutomationTask]:
         return self._automation_tasks
 
+    async def automation_history(self, task_id: str) -> list[TimingDecision]:
+        if not any(task.id == task_id for task in self._automation_tasks):
+            raise LookupError(task_id)
+        return []
+
+    async def automation_replay(self, request: ReplayRequest) -> ReplayResult:
+        trend = await self.shop_trend(request.merchant_key, request.shop_id)
+        addition = trend.suggested_addition_minutes
+        return ReplayResult(
+            request=request,
+            decisions=[],
+            first_would_submit_at=None,
+            comparison=[
+                ReplayComparison(
+                    evaluated_at=FIXED_NOW,
+                    baseline_margin_minutes=request.model_error_minutes,
+                    suggested_addition_minutes=addition,
+                    suggested_margin_minutes=min(120, request.model_error_minutes + addition)
+                    if addition is not None
+                    else None,
+                    fixed_would_submit=False,
+                    suggested_would_submit=False if addition is not None else None,
+                    trend=trend,
+                )
+            ],
+        )
+
+    async def shop_trend(self, merchant_key: str, shop_id: int) -> TrendSummary:
+        self._merchant(merchant_key)
+        pairs = [
+            TrendPair(
+                shop_id,
+                FIXED_NOW - timedelta(minutes=6 * i + 4),
+                FIXED_NOW - timedelta(minutes=6 * i),
+                -10,
+            )
+            for i in range(self.trend_sample_count)
+        ]
+        return TrendTimeline(pairs).summary(shop_id, FIXED_NOW)
+
     async def create_automation_task(self, request: AutomationRequest) -> AutomationTask:
         self.automation_requests.append(request)
         task = AutomationTask(
@@ -146,6 +197,41 @@ class BrowserFakeService:
         task.last_decision = "監視を取り消しました"
         task.next_evaluation_at = None
         return task
+
+    async def automation_edit_context(self, task_id: str) -> AutomationEditContext:
+        task = next(item for item in self._automation_tasks if item.id == task_id)
+        shop = await self.shop_detail(task.merchant_key, task.shop_id)
+        return AutomationEditContext(
+            task=task,
+            shop=shop,
+            selections_compatible=form_matches(task, shop),
+            form_revision=form_revision(shop),
+        )
+
+    async def edit_automation_task(
+        self, task_id: str, request: AutomationEditRequest
+    ) -> AutomationTask:
+        context = await self.automation_edit_context(task_id)
+        task = context.task
+        if (
+            request.expected_version != task.version
+            or request.form_revision != context.form_revision
+        ):
+            raise TaskConflictError("状態が変わりました。最新情報を確認してください")
+        updated = task.model_copy(
+            update={
+                **request.model_dump(exclude={"expected_version", "form_revision"}),
+                "version": task.version + 1,
+                "state": "scheduled",
+                "next_evaluation_at": FIXED_NOW,
+                "last_decision": "設定を更新しました。新しい内容で再評価します",
+                "form_signature": form_signature(context.shop),
+            }
+        )
+        self._automation_tasks = [
+            updated if item.id == task_id else item for item in self._automation_tasks
+        ]
+        return updated
 
     async def resolve_automation_task(self, task_id: str) -> AutomationTask:
         return await self.cancel_automation_task(task_id)
@@ -391,4 +477,5 @@ class BrowserFakeService:
                 id=shop.id, name=shop.name, sub_name=shop.sub_name, address=shop.address
             ),
             observations=observations,
+            trend=await self.shop_trend(merchant_key, shop_id),
         )
