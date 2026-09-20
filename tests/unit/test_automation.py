@@ -100,6 +100,74 @@ def request(arrival):
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["live", "simulation"])
+@pytest.mark.parametrize("failure", ["closed", "read"])
+async def test_unsent_failure_retries_through_arrival_grace(setup, monkeypatch, mode, failure):
+    service, runner, client, _, now = setup
+    arrival = now[0] + timedelta(minutes=1)
+    task = await runner.create(request(arrival).model_copy(update={"mode": mode}))
+    original = client.get_shop
+
+    async def failing_read(*args, **kwargs):
+        raise httpx.ReadTimeout("synthetic")
+
+    if failure == "closed":
+        client.shop.is_issuable = False
+    else:
+        monkeypatch.setattr(client, "get_shop", failing_read)
+    now[0] = arrival + timedelta(seconds=30)
+    await runner.run_once()
+    current = service._automation.get(task.id)
+    assert current.state == "monitoring"
+    assert current.intent_id is None
+    assert client.posts == 0
+    client.shop.is_issuable = True
+    monkeypatch.setattr(client, "get_shop", original)
+    now[0] = arrival + timedelta(minutes=2)
+    await runner.run_once()
+    assert service._automation.get(task.id).state == ("queued" if mode == "live" else "simulated")
+    assert client.posts == (1 if mode == "live" else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["live", "simulation"])
+async def test_unavailable_grace_expires_without_submission(setup, mode):
+    service, runner, client, _, now = setup
+    arrival = now[0] + timedelta(minutes=1)
+    task = await runner.create(request(arrival).model_copy(update={"mode": mode}))
+    client.shop.is_open = False
+    now[0] = arrival + timedelta(minutes=2)
+    await runner.run_once()
+    assert service._automation.get(task.id).state == "monitoring"
+    now[0] += timedelta(microseconds=1)
+    await runner.run_once()
+    assert service._automation.get(task.id).state == "expired"
+    assert client.posts == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("flags", "code", "message"),
+    [
+        ({"is_holiday": True}, "shop_holiday", "本日は休業です"),
+        ({"is_suspended": True}, "shop_suspended", "受付を一時停止しています"),
+        ({"is_open": False}, "shop_closed", "現在は営業時間外です"),
+        ({"is_issuable": False}, "reception_closed", "現在は順番待ちを受け付けていません"),
+    ],
+)
+async def test_unavailable_task_records_specific_shop_reason(setup, flags, code, message):
+    service, runner, client, _, now = setup
+    task = await runner.create(request(now[0] + timedelta(minutes=60)))
+    client.shop = client.shop.model_copy(update=flags)
+    await runner.run_once()
+    current = service._automation.get(task.id)
+    assert current.state == "monitoring"
+    assert message in current.last_decision
+    assert service._automation.list_decisions(task.id)[-1].reason_code == code
+    assert client.posts == 0
+
+
 def edit_body(task, **changes):
     import json
 
@@ -474,10 +542,10 @@ def test_task_mode_cannot_be_assigned_into_live():
 async def test_replay_requires_offset_and_is_read_only_with_gap_and_future_cutoff(
     setup, monkeypatch
 ):
-    service, _, client, _, now = setup
+    service, _, client, _, _ = setup
     from matoca_service.web.app import create_app
 
-    at = now[0].replace(hour=3, minute=0, second=0, microsecond=0)
+    at = datetime(2020, 1, 10, 3, tzinfo=UTC)
     for minute, fresh in [(0, True), (1, False), (2, True)]:
         service._shops.save_cycle(
             CollectionWrite(
@@ -606,8 +674,8 @@ def test_legacy_task_payload_defaults_to_live(setup):
 def test_replay_uses_each_observation_time_for_labels_and_bounds(setup):
     from matoca_service.automation.replay import ReplayRequest, replay
 
-    service, _, client, _, now = setup
-    start = now[0].replace(hour=3, minute=0, second=0, microsecond=0)
+    service, _, client, _, _ = setup
+    start = datetime(2020, 1, 10, 3, tzinfo=UTC)
     for minute in [0, 1, 2, 3]:
         service._shops.save_cycle(
             CollectionWrite(
@@ -692,7 +760,7 @@ async def test_timing_boundary_and_atomic_intent_before_post(setup):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "late,available,expected", [(1, True, "queued"), (1, False, "expired"), (3, True, "expired")]
+    "late,available,expected", [(1, True, "queued"), (1, False, "monitoring"), (3, True, "expired")]
 )
 async def test_deadline_grace_prevents_late_replay(setup, late, available, expected):
     service, runner, client, _, now = setup

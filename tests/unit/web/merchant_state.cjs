@@ -38,6 +38,13 @@ class Element {
     }
   }
   appendChild(child) { this.append(child); return child; }
+  after(...children) {
+    const parent = this.parentElement;
+    if (!parent) return;
+    const index = parent.children.indexOf(this);
+    for (const child of children) child.parentElement = parent;
+    parent.children.splice(index + 1, 0, ...children);
+  }
   replaceChildren(...children) { this.children = []; this._text = ''; this.append(...children); }
   matches(selector) {
     const excluded = selector.match(/:not\(([^)]+)\)/);

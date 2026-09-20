@@ -8,6 +8,8 @@ export class AutomationPanel {
     this.target = document.querySelector("#automation-tasks");
     this.revision = 0;
     this.busy = new Set();
+    this.openHistories = new Set();
+    this.expandedHistories = new Set();
   }
 
   async refresh() {
@@ -44,21 +46,29 @@ export class AutomationPanel {
       summary.textContent = "判断履歴を見る";
       const records = this.document.createElement("div");
       history.append(summary, records);
-      history.addEventListener("toggle", async () => {
-        if (!history.open) return;
+      let historyRevision = 0;
+      const loadHistory = async () => {
+        const revision = ++historyRevision;
         records.textContent = "読み込み中です";
         try {
           const rows = await this.api.automationHistory(task.id);
-          records.replaceChildren();
-          if (!rows.length) records.textContent = "評価記録はまだありません";
-          for (const row of rows) {
-            const text = this.document.createElement("p");
-            text.textContent = `${time(row.evaluated_at)}・${row.reason}・条件成立 ${row.would_submit ? "はい" : "いいえ"}・最新確認 ${row.fresh ? "有効" : "期限切れ"}・公式 ${row.official_minutes ?? "不明"}${row.official_minutes === null ? "" : "分"}${row.official_is_more ? "以上" : ""}・予測 ${row.prediction ? `${row.prediction.fast_minutes}〜${row.prediction.typical_minutes}分` : "なし"}・早着許容 ${row.early_tolerance_minutes}分・予測誤差 ${row.model_error_minutes}分`;
-            records.append(text);
-          }
-        } catch { records.textContent = "判断履歴を取得できませんでした"; }
+          if (revision !== historyRevision || !history.isConnected) return;
+          this.renderHistory(records, rows, task.id, time);
+        } catch {
+          if (revision === historyRevision) records.textContent = "判断履歴を取得できませんでした";
+        }
+      };
+      history.addEventListener("toggle", () => {
+        if (!history.isConnected) return;
+        if (history.open) {
+          this.openHistories.add(task.id);
+          return loadHistory();
+        }
+        ++historyRevision;
+        this.openHistories.delete(task.id);
       });
       item.append(history);
+      history.open = this.openHistories.has(task.id);
       const cancellable = !task.intent_id && ["scheduled", "monitoring", "needs_attention"].includes(task.state);
       const resolvable = task.intent_id && ["needs_attention", "reconciling", "submitting"].includes(task.state);
       if (cancellable) {
@@ -106,5 +116,47 @@ export class AutomationPanel {
       item.append(error);
       this.target.append(item);
     }
+  }
+
+  renderHistory(target, rows, taskId, time) {
+    const groups = [];
+    for (const row of rows) {
+      const key = JSON.stringify([row.reason_code, row.reason, row.fresh, row.would_submit,
+        row.official_minutes, row.official_is_more, row.prediction,
+        row.arrival_at, row.early_tolerance_minutes, row.model_error_minutes]);
+      const previous = groups.at(-1);
+      if (previous?.key === key) {
+        previous.row = row;
+        previous.count++;
+      } else groups.push({key, row, start: row.evaluated_at, count: 1});
+    }
+    groups.reverse();
+    const draw = () => {
+      target.replaceChildren();
+      if (!groups.length) { target.textContent = "評価記録はまだありません"; return; }
+      const expanded = this.expandedHistories.has(taskId);
+      const note = this.document.createElement("p");
+      note.textContent = `${rows.length}件の評価・新しい順${expanded ? "" : "（最新10件の判断）"}。連続する同じ判断はまとめています。`;
+      target.append(note);
+      for (const group of expanded ? groups : groups.slice(0, 10)) {
+        const {row, start, count} = group;
+        const text = this.document.createElement("p");
+        text.className = "automation-history-entry";
+        const span = count > 1 ? `${time(start)}〜${time(row.evaluated_at)}・同じ判断が${count}回連続` : time(row.evaluated_at);
+        text.textContent = `${span}・${row.reason}・条件成立 ${row.would_submit ? "はい" : "いいえ"}・最新確認 ${row.fresh ? "有効" : "未確認または期限切れ"}・公式 ${row.official_minutes ?? "不明"}${row.official_minutes == null ? "" : "分"}${row.official_is_more ? "以上" : ""}・予測 ${row.prediction ? `${row.prediction.fast_minutes}〜${row.prediction.typical_minutes}分` : "なし"}・早着許容 ${row.early_tolerance_minutes}分・予測誤差 ${row.model_error_minutes}分`;
+        target.append(text);
+      }
+      if (groups.length > 10) {
+        const button = this.document.createElement("button");
+        button.type = "button";
+        button.textContent = expanded ? "最新の判断だけ表示" : "すべての判断を表示";
+        button.addEventListener("click", () => {
+          expanded ? this.expandedHistories.delete(taskId) : this.expandedHistories.add(taskId);
+          draw();
+        });
+        target.append(button);
+      }
+    };
+    draw();
   }
 }

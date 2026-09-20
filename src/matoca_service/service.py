@@ -77,6 +77,12 @@ class QueueUnavailableError(RuntimeError):
     pass
 
 
+class ReceptionUnavailableError(QueueUnavailableError):
+    def __init__(self, reason_code: str, message: str) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+
+
 class QueueOutcomeUnknownError(RuntimeError):
     pass
 
@@ -171,8 +177,14 @@ def validate_queue_submission(
 ) -> None:
     if current_waiting:
         raise QueueUnavailableError("すでに受付中の順番待ちがあります")
-    if not shop.is_issuable or not shop.is_open or shop.is_holiday or shop.is_suspended:
-        raise QueueUnavailableError("受付状況が変更されました")
+    if shop.is_holiday:
+        raise ReceptionUnavailableError("shop_holiday", "本日は休業です")
+    if shop.is_suspended:
+        raise ReceptionUnavailableError("shop_suspended", "受付を一時停止しています")
+    if not shop.is_open:
+        raise ReceptionUnavailableError("shop_closed", "現在は営業時間外です")
+    if not shop.is_issuable:
+        raise ReceptionUnavailableError("reception_closed", "現在は順番待ちを受け付けていません")
     if shop.lat is None or shop.lng is None:
         raise QueueUnavailableError("店舗の位置情報を取得できません")
     if shop.forms is not None:

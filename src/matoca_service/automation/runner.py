@@ -395,6 +395,7 @@ class AutomationRunner:
             QueueOutcomeUnknownError,
             QueueSubmission,
             QueueUnavailableError,
+            ReceptionUnavailableError,
         )
 
         if task.state in {"cancelled", "expired", "failed", "completed", "unknown"}:
@@ -519,20 +520,26 @@ class AutomationRunner:
             current = await run_storage(self.repository.get, task.id)
             await self._record(current, "reconciling", "受付結果を照合中です。自動で再送しません")
         except (QueueUnavailableError, TaskConflictError) as error:
-            await self._record_blocked(task, "checks_failed", str(error), checks_started)
+            unavailable = isinstance(error, ReceptionUnavailableError)
+            reason = f"{error}。次回の評価で再確認します" if unavailable else str(error)
+            reason_code = (
+                error.reason_code
+                if isinstance(error, ReceptionUnavailableError)
+                else "checks_failed"
+            )
+            await self._record_blocked(task, reason_code, reason, checks_started)
             current = await run_storage(self.repository.get, task.id)
             if current.intent_id:
                 await self._recover(current)
             else:
-                unavailable = str(error) == "受付状況が変更されました"
                 state: TaskState = (
                     "expired"
-                    if self.now() >= task.arrival_at
+                    if self.now() > task.arrival_at + timedelta(minutes=2)
                     else "monitoring"
                     if unavailable
                     else "needs_attention"
                 )
-                await self._record(current, state, str(error))
+                await self._record(current, state, reason)
         except Exception:
             await self._record_blocked(
                 task, "read_error", "最新情報を確認できません", checks_started
@@ -543,7 +550,7 @@ class AutomationRunner:
                 "reconciling"
                 if current.intent_id
                 else "expired"
-                if self.now() >= task.arrival_at
+                if self.now() > task.arrival_at + timedelta(minutes=2)
                 else "monitoring",
                 "最新情報を確認できません。送信せずに受付状況を確認します",
             )

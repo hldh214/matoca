@@ -437,7 +437,7 @@ def test_queue_submission_requires_currently_issuable_shop() -> None:
     )
     submission = QueueSubmission(shop_id=3272, adult_count=2, child_count=0)
 
-    with pytest.raises(QueueUnavailableError, match="受付状況が変更されました"):
+    with pytest.raises(QueueUnavailableError, match="現在は順番待ちを受け付けていません"):
         validate_queue_submission(shop, submission, [])
 
 

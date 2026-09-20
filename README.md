@@ -137,6 +137,13 @@ use the apply button to add it to the current form, capped at 120 minutes. Saved
 tasks and preferences are never changed automatically. Replay can compare the
 fixed margin with the suggestion available at each historical timestamp.
 
+Before submission begins, temporary read failures or unavailable reception keep
+monitoring through the inclusive two-minute arrival grace period. Once an intent
+exists, the runner reconciles the result without resubmitting. Task reasons
+distinguish closed hours, holidays, suspended reception and unavailable reception.
+Decision history shows the ten newest groups by default, combines consecutive
+identical decisions, and lets you expand all recorded groups.
+
 Tasks that have not begun submission can be edited from the task panel. Editing
 preserves their merchant, shop, execution mode and recorded history; arrival,
 party, answers and margins are revalidated against the fresh shop form. Saved

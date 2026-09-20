@@ -49,6 +49,53 @@ def saved_edit_task(browser_service, mode="simulation"):
     return task
 
 
+def test_decision_history_groups_repeats_shows_recent_and_survives_refresh(
+    safe_page: Page, browser_base_url: str, browser_service: BrowserFakeService, monkeypatch
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from playwright.sync_api import expect
+
+    from matoca_service.automation.decisions import TimingDecision
+
+    task = saved_edit_task(browser_service)
+    start = datetime(2026, 9, 20, 1, tzinfo=UTC)
+    rows = [
+        TimingDecision(
+            evaluated_at=start + timedelta(minutes=i),
+            checked_at=start + timedelta(minutes=i),
+            fresh=True,
+            official_minutes=None if i < 3 else 20 + i,
+            official_is_more=False,
+            prediction=None,
+            arrival_at=task.arrival_at,
+            early_tolerance_minutes=15,
+            model_error_minutes=15,
+            reason_code="shop_closed" if i < 3 else "too_early",
+            reason="営業時間外" if i < 3 else f"評価記録{i}",
+        )
+        for i in range(15)
+    ]
+
+    async def history(task_id):
+        assert task_id == task.id
+        return rows
+
+    monkeypatch.setattr(browser_service, "automation_history", history)
+    safe_page.goto(f"{browser_base_url}/merchants/sawayaka")
+    band = safe_page.get_by_role("region", name="到着予定の自動受付")
+    band.get_by_text("判断履歴を見る").click()
+    entries = band.locator(".automation-history-entry")
+    expect(entries).to_have_count(10)
+    expect(entries.first).to_contain_text("評価記録14")
+    band.get_by_role("button", name="すべての判断を表示").click()
+    expect(entries).to_have_count(13)
+    expect(entries.last).to_contain_text("同じ判断が3回連続")
+    safe_page.get_by_role("button", name="最新情報に更新").click()
+    expect(entries).to_have_count(13)
+    expect(band.locator("details")).to_have_attribute("open", "")
+
+
 @pytest.mark.parametrize("mode", ["live", "simulation"])
 def test_edit_prefills_saved_values_reconfirms_consent_and_reopens_saved_result(
     safe_page: Page, browser_base_url: str, browser_service: BrowserFakeService, mode: str
