@@ -1,28 +1,34 @@
+import {feedback} from "./feedback.js";
 import {MatocaApi} from "./api.js";
 import {ShopList} from "./shop-list.js";
 import {QueueStatus} from "./queue-status.js";
 import {JoinForm} from "./join-form.js";
 import {PreferencesDialog} from "./preferences.js";
-import {ShopHistoryDialog} from "./shop-history.js";
-import {AutomationPanel} from "./automation.js";
 
 const api = new MatocaApi(document.body.dataset.merchantKey);
 const preferences = new PreferencesDialog(document, api);
 const queue = new QueueStatus(document, api, render, reload);
 const join = new JoinForm(document, api, preferences, queue, reload);
-const history = new ShopHistoryDialog(document, api);
-const automation = new AutomationPanel(document, api, reload, (task) => join.openEdit(task));
 const favorites = new Set();
 const pendingFavorites = new Set();
-const list = new ShopList(document, (shop) => join.open(shop), toggleFavorite,
-  (shop) => history.open(shop, new Date(data.updated_at).toLocaleDateString("sv-SE",
-    {timeZone: "Asia/Tokyo"})), (shop) => join.open(shop, true));
+const list = new ShopList(document, (shop) => join.open(shop), toggleFavorite);
 const search = document.querySelector("#shop-search");
 const sort = document.querySelector("#shop-sort");
 const updated = document.querySelector("#updated-at");
 let data = null;
 let filter = "available";
 let consoleRevision = 0;
+const viewKey = `matoca:view:${document.body.dataset.merchantKey}`;
+try {
+  const saved = JSON.parse(localStorage.getItem(viewKey) || "{}");
+  if (["available", "all", "favorites"].includes(saved.filter)) filter = saved.filter;
+  if (["official", "waiting", "name"].includes(saved.sort)) sort.value = saved.sort;
+  if (typeof saved.search === "string") search.value = saved.search;
+} catch { /* Storage may be unavailable. */ }
+function saveView() {
+  try { localStorage.setItem(viewKey, JSON.stringify({filter, sort: sort.value, search: search.value})); }
+  catch { /* The console also works without local storage. */ }
+}
 
 function render() {
   list.render(data, filter, search.value, sort.value, favorites, pendingFavorites,
@@ -36,7 +42,7 @@ async function toggleFavorite(shop) {
   enabled ? favorites.add(shop.id) : favorites.delete(shop.id);
   render();
   try { await api.setFavorite(shop.id, enabled); }
-  catch { enabled ? favorites.delete(shop.id) : favorites.add(shop.id); }
+  catch { enabled ? favorites.delete(shop.id) : favorites.add(shop.id); feedback(document, "お気に入りを保存できませんでした。もう一度お試しください", true); }
   finally { pendingFavorites.delete(shop.id); render(); }
 }
 async function loadFavorites() {
@@ -63,7 +69,7 @@ async function loadConsole() {
   }
 }
 
-function reload() { return Promise.all([loadConsole(), queue.refresh(), automation.refresh()]); }
+function reload() { return Promise.all([loadConsole(), queue.refresh()]); }
 
 document.querySelectorAll(".dialog-close").forEach((button) => {
   button.addEventListener("click", () => button.closest("dialog").close());
@@ -75,12 +81,14 @@ document.querySelectorAll("[data-filter]").forEach((button) => {
       item.classList.toggle("is-active", item === button);
       item.setAttribute("aria-pressed", String(item === button));
     });
+    saveView();
     render();
   });
+  button.classList.toggle("is-active", button.dataset.filter === filter);
   button.setAttribute("aria-pressed", String(button.dataset.filter === filter));
 });
-search.addEventListener("input", render);
-sort.addEventListener("change", render);
+search.addEventListener("input", () => { saveView(); render(); });
+sort.addEventListener("change", () => { saveView(); render(); });
 document.querySelector("#refresh-button").addEventListener("click", async (event) => {
   const button = event.currentTarget;
   if (button.disabled) return;
@@ -88,9 +96,10 @@ document.querySelector("#refresh-button").addEventListener("click", async (event
   button.setAttribute("aria-busy", "true");
   try {
     await api.refresh();
-    await loadConsole();
+    await reload();
   } catch (error) {
     updated.textContent = error.detail || "最新情報を取得できませんでした";
+    await queue.refresh();
   } finally {
     button.disabled = false;
     button.setAttribute("aria-busy", "false");

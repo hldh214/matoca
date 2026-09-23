@@ -4,6 +4,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, date, datetime, time, timedelta
+from functools import cached_property
 from pathlib import Path
 from typing import Literal, TypeVar
 from zoneinfo import ZoneInfo
@@ -40,7 +41,6 @@ from matoca_service.matoca.models import CreateWaitingRequest, Shop, ShopOptions
 from matoca_service.notifications.keys import VapidKeys
 from matoca_service.notifications.repository import NotificationRepository
 from matoca_service.notifications.service import NotificationService
-from matoca_service.prediction.model import remaining
 from matoca_service.prediction.models import Prediction
 from matoca_service.prediction.repository import PredictionRepository, PredictionService
 from matoca_service.prediction.trends import TrendSummary
@@ -262,27 +262,38 @@ class MatocaService:
         self.notifications = NotificationService(
             NotificationRepository(self._database), VapidKeys(self._store)
         )
-        self._shops = ShopRepository(self._database)
+        self._shops = ShopRepository(self._database, record_history=False)
         self._preferences = PreferenceRepository(self._database)
         self._analytics = AnalyticsRepository(self._database)
         self._queues = QueueRepository(self._database)
         self._automation = AutomationRepository(self._database)
-        self._predictions = PredictionService(PredictionRepository(self._database))
         self._collector = CollectionService(self, self._shops)
-        self._poll_schedule = PollSchedule(self._shops)
+        self._poll_schedule = PollSchedule(self._shops, use_history=False)
         self._collection_coordinator = CollectionCoordinator(
             self._registry,
             self._collector,
             self._poll_schedule,
             self._shops,
-            has_active_task=self._automation.has_active_task,
+            has_active_task=lambda _: False,
         )
         self._operation_lock = asyncio.Lock()
-        self._automation_runner = AutomationRunner(self, self._automation)
-        self.automation_coordinator = AutomationCoordinator(self._automation_runner)
         self._tracking_coordinator = QueueTrackingCoordinator(
             list(self._registry.merchants), self, self._queues, reader_persists=True
         )
+
+    # Legacy offline analysis helpers are lazy. The web application does not start
+    # their coordinator or expose their endpoints.
+    @cached_property
+    def _predictions(self) -> PredictionService:
+        return PredictionService(PredictionRepository(self._database))
+
+    @cached_property
+    def _automation_runner(self) -> AutomationRunner:
+        return AutomationRunner(self, self._automation)
+
+    @cached_property
+    def automation_coordinator(self) -> AutomationCoordinator:
+        return AutomationCoordinator(self._automation_runner)
 
     @property
     def collection_coordinator(self) -> CollectionCoordinator:
@@ -370,6 +381,14 @@ class MatocaService:
             self._predictions.predict, merchant_key, shop_id, official_minutes, at
         )
 
+    async def predict_pre_call(
+        self, merchant_key: str, shop_id: int, official_minutes: int | None, at: datetime
+    ) -> Prediction | None:
+        self._merchant(merchant_key)
+        return await run_storage(
+            self._predictions.predict_pre_call, merchant_key, shop_id, official_minutes, at
+        )
+
     async def shop_history(self, merchant_key: str, shop_id: int, day: date) -> ShopHistory:
         self._merchant(merchant_key)
         history = await run_storage(self._analytics.shop_history, merchant_key, shop_id, day)
@@ -419,27 +438,7 @@ class MatocaService:
             now,
             stale_after=stale_after,
         )
-        return console.model_copy(
-            update={
-                "shops": [
-                    shop.model_copy(
-                        update={
-                            "prediction": self._predictions.predict(
-                                merchant_key,
-                                shop.id,
-                                (
-                                    shop.official_waiting_minutes
-                                    if not shop.official_waiting_is_more
-                                    else None
-                                ),
-                                shop.updated_at or now,
-                            )
-                        }
-                    )
-                    for shop in console.shops
-                ]
-            }
-        )
+        return console
 
     def _stored_snapshot(
         self,
@@ -511,9 +510,21 @@ class MatocaService:
 
     async def tracking_read(self, merchant_key: str) -> list[Waiting]:
         async with self._operation_lock:
-            waiting = await self._authenticated_read(
-                merchant_key, lambda client: client.list_waiting()
-            )
+            closed_ids = await run_storage(self._queues.closed_waiting_ids, merchant_key)
+
+            async def read(client: MatocaClient) -> list[Waiting]:
+                waiting = await client.list_waiting()
+                for index, item in enumerate(waiting):
+                    if item.id in closed_ids:
+                        continue
+                    if item.count is None or item.estimate_time is None:
+                        detail = await client.get_waiting(item.id)
+                        waiting[index] = Waiting.model_validate(
+                            {**item.model_dump(), **detail.model_dump(exclude_unset=True)}
+                        )
+                return waiting
+
+            waiting = await self._authenticated_read(merchant_key, read)
             await run_storage(
                 self._queues.record_waiting, merchant_key, datetime.now(tz=UTC), waiting
             )
@@ -542,7 +553,7 @@ class MatocaService:
                 session.observations[-1].observed_at if session.observations else None
             )
             stale = session.stale or (
-                session.status == "active"
+                session.status in {"active", "called"}
                 and (
                     latest_observed_at is None
                     or current_minute - latest_observed_at.astimezone(UTC)
@@ -550,25 +561,6 @@ class MatocaService:
                 )
             )
             session = session.model_copy(update={"stale": stale})
-            prediction = None
-            if (
-                session.status == "active"
-                and not session.stale
-                and session.shop_id is not None
-                and session.submitted_at is not None
-                and session.official_minutes_at_submission is not None
-                and session.official_is_more_at_submission is False
-            ):
-                total = await run_storage(
-                    self._predictions.predict,
-                    session.merchant_key,
-                    session.shop_id,
-                    session.official_minutes_at_submission,
-                    session.submitted_at,
-                )
-                prediction = (
-                    remaining(total, session.submitted_at, now) if total is not None else None
-                )
             enriched_sessions.append(
                 session.model_copy(
                     update={
@@ -578,7 +570,7 @@ class MatocaService:
                             if session.shop_id is not None
                             else None
                         ),
-                        "prediction": prediction,
+                        "prediction": None,
                     }
                 )
             )
@@ -718,15 +710,10 @@ class MatocaService:
         async with self._operation_lock:
             intents = await run_storage(self._queues.list_unfinished_intents)
             intent = next((item for item in intents if item.intent_id == intent_id), None)
-            tasks = await run_storage(self._automation.list_tasks)
-            if (
-                intent is None
-                or intent.source != "manual"
-                or any(task.intent_id == intent_id for task in tasks)
-            ):
-                raise QueueUnavailableError("この受付は自動受付の状態から確認してください")
+            if intent is None:
+                raise QueueUnavailableError("この受付の確認はすでに終了しています")
             await self._check_account_waiting_unlocked()
-            await run_storage(self._queues.mark_intent_failed, intent_id, "user_confirmed_absent")
+            await run_storage(self._queues.confirm_absent_intent, intent_id, datetime.now(UTC))
 
     async def _check_account_waiting_unlocked(self, *, exclude: str | None = None) -> None:
         for key in self._registry.merchants:
@@ -863,6 +850,7 @@ class MatocaService:
                     waiting_id=created.id,
                     number=created.number,
                     count=created.count,
+                    status=created.status,
                     observed_at=datetime.now(tz=UTC),
                 )
             except (sqlite3.Error, OSError) as error:

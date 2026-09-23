@@ -157,6 +157,67 @@ async def test_waiting_parses_non_empty_content(merchant: MerchantConfig) -> Non
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_waiting_reads_nested_records_with_numeric_status(merchant: MerchantConfig) -> None:
+    respx.get("https://admin.junbanmachi.jp/liff/waiting").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "content": [
+                    {
+                        "waiting": {
+                            "id": 123,
+                            "number": 11,
+                            "status": 8,
+                            "adult_count": 2,
+                            "child_count": 0,
+                        },
+                        "shop": {"id": 456, "name": "synthetic shop"},
+                    }
+                ],
+            },
+        ),
+    )
+    async with httpx.AsyncClient() as http:
+        waiting = await MatocaClient(merchant, http, "synthetic-liff").list_waiting()
+    assert len(waiting) == 1
+    assert waiting[0].id == 123
+    assert waiting[0].shop_id == 456
+    assert waiting[0].status == 8
+    assert waiting[0].adult_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_waiting_detail_uses_requested_id_when_response_omits_it(
+    merchant: MerchantConfig,
+) -> None:
+    respx.get("https://admin.junbanmachi.jp/liff/waiting/123").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "success",
+                "content": {
+                    "count": 3,
+                    "number": 11,
+                    "status": 8,
+                    "call_count": 0,
+                    "is_coming": False,
+                    "estimate_time": None,
+                },
+            },
+        ),
+    )
+    async with httpx.AsyncClient() as http:
+        waiting = await MatocaClient(merchant, http, "synthetic-liff").get_waiting(123)
+    assert waiting.id == 123
+    assert waiting.status == 8
+    assert waiting.count == 3
+    assert waiting.number == 11
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_waiting_rejects_non_numeric_count(merchant: MerchantConfig) -> None:
     respx.get("https://admin.junbanmachi.jp/liff/waiting").mock(
         return_value=httpx.Response(

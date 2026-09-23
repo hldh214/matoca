@@ -20,4 +20,5 @@ __pycache__/
 test-results/
 
 docs/superpowers/
+docs/local-validation/
 .superpowers/

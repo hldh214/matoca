@@ -51,10 +51,15 @@ def evaluate_timing(
         )
     elif prediction is None:
         code, reason = "prediction_unavailable", "予測を確認できないため、受付を保留しました"
+    elif prediction.target == "pre_call" and prediction.effective_samples == 0:
+        code, reason = (
+            "pre_call_samples_missing",
+            "事前呼出の記録がないため、到着予定まで受付を待ちます",
+        )
     elif evaluated_at + timedelta(
         minutes=max(0, prediction.fast_minutes - model_error_minutes)
     ) < arrival_at - timedelta(minutes=early_tolerance_minutes):
-        code, reason = "too_early", "早く呼ばれる可能性があるため、次回の評価を待っています"
+        code, reason = "too_early", "事前呼出が早まる可能性があるため、次回の評価を待っています"
     else:
         code, reason = "timing_ready", "到着予定に対する受付条件を満たしました"
     return TimingDecision(

@@ -6,11 +6,11 @@
     <title>{{ merchant.name }} | Matoca</title>
     <link rel="manifest" href="/manifest.webmanifest">
     <meta name="theme-color" content="#176b54">
-    <link rel="stylesheet" href="/static/push.css">
-    <script type="module" src="/static/push.js"></script>
-    <link rel="stylesheet" href="{{ url_for('static', path='/dashboard.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', path='/merchant.css') }}">
-    <script type="module" src="{{ url_for('static', path='/merchant.js') }}" defer></script>
+    <link rel="stylesheet" href="{{ asset_url('push.css') }}">
+    <script type="module" src="{{ asset_url('push.js') }}"></script>
+    <link rel="stylesheet" href="{{ asset_url('dashboard.css') }}">
+    <link rel="stylesheet" href="{{ asset_url('merchant.css') }}">
+    <script type="module" src="{{ asset_url('merchant.js') }}" defer></script>
   </head>
   <body data-merchant-key="{{ merchant.key }}">
     <header class="app-header console-header">
@@ -22,6 +22,7 @@
       </div>
     </header>
     <main class="console-main">
+      <p id="operation-feedback" class="operation-feedback" role="status" aria-label="操作結果" aria-live="polite"></p>
       <section class="queue-band" aria-labelledby="queue-title">
         <div>
           <p>現在の受付</p>
@@ -29,15 +30,12 @@
         </div>
         <div id="current-queue" class="queue-content" aria-live="polite">順番待ちを確認中です</div>
       </section>
-      <section class="automation-panel" aria-label="到着予定の自動受付">
-        <h2>到着予定の自動受付</h2>
-        <div id="automation-tasks" aria-live="polite">自動受付を確認中です</div>
-      </section>
       <section class="shop-console" aria-label="店舗一覧">
         <div class="toolbar">
           <div class="segmented" id="shop-filter" role="group" aria-label="店舗の絞り込み">
             <button type="button" data-filter="available" class="is-active">受付可能</button>
             <button type="button" data-filter="all">すべて</button>
+            <button type="button" data-filter="favorites">お気に入り</button>
           </div>
           <label class="search-field"><span>店舗を検索</span><input id="shop-search" type="search" placeholder="店舗名で検索"></label>
           <label class="sort-field"><span>並び順</span><select id="shop-sort" aria-label="並び順"><option value="official">公式目安が短い順</option><option value="waiting">待ち組数が少ない順</option><option value="name">店舗名順</option></select></label>
@@ -46,19 +44,11 @@
           <span>受付可能 <output id="available-count">—</output> 店</span>
           <span>全店舗 <output id="total-count">—</output> 店</span>
         </div>
-        <div class="list-header" aria-hidden="true"><span>店舗</span><span>受付状況</span><span>待ち組数</span><span>待ち時間</span><span>店舗操作</span><span></span></div>
+        <div class="list-header" aria-hidden="true"><span>店舗</span><span>受付状況</span><span>待ち組数</span><span>待ち時間</span><span></span><span></span></div>
         <div id="shop-list" class="shop-list"><p class="loading-state">最新情報を取得しています</p></div>
         <p id="updated-at" class="updated-at"></p>
       </section>
     </main>
-    <dialog id="history-dialog" class="queue-dialog history-dialog" aria-labelledby="history-title">
-      <div class="history-content">
-        <button class="dialog-close" type="button" aria-label="閉じる">×</button>
-        <h2 id="history-title">店舗の履歴</h2>
-        <label class="history-date"><span>日付</span><input id="history-day" type="date"></label>
-        <div id="history-body" aria-live="polite"></div>
-      </div>
-    </dialog>
     <dialog id="settings-dialog" class="queue-dialog settings-dialog" aria-labelledby="settings-title">
       <form method="dialog" id="settings-form">
         <button class="dialog-close" type="button" aria-label="閉じる">×</button>
@@ -79,24 +69,8 @@
         <div class="counter-row"><span>大人</span><div class="stepper"><button type="button" data-step="adult" data-delta="-1" aria-label="大人を減らす">−</button><output id="adult-count">2</output><button type="button" data-step="adult" data-delta="1" aria-label="大人を増やす">＋</button></div></div>
         <div class="counter-row"><span>子ども</span><div class="stepper"><button type="button" data-step="child" data-delta="-1" aria-label="子どもを減らす">−</button><output id="child-count">0</output><button type="button" data-step="child" data-delta="1" aria-label="子どもを増やす">＋</button></div></div>
         <div id="confirm-items" class="confirm-items"></div>
-        <label>事前の連絡事項<textarea id="in-advance-information" maxlength="1000"></textarea></label>
-        <div id="automation-fields" class="automation-fields" hidden>
-          <label>実行方法<select id="automation-mode"><option value="live">実際に自動受付する</option><option value="simulation">シミュレーション（申込なし）</option></select></label>
-          <p id="automation-edit-status" hidden></p>
-          <p id="simulation-note" hidden>現在の受付条件を確認し、最初に条件を満たした時刻を記録して終了します。実際の申込は行いません。実際の自動受付には別の設定と同意が必要です。</p>
-          <label>到着予定日時<input id="arrival-at" type="datetime-local"></label>
-          <details><summary>予測の詳細設定</summary>
-            <label>早い呼び出しの許容時間（分）<input id="early-tolerance" type="number" min="0" max="120" value="15"></label>
-            <label>予測の誤差（分）<input id="model-error" type="number" min="0" max="120" value="15"></label>
-          </details>
-          <div id="automation-trend" aria-live="polite"></div>
-          <p id="trend-margin-preview"></p>
-          <button id="apply-trend-margin" type="button" disabled>提案の余裕をこの設定に適用</button>
-          <p id="automation-explanation">1分ごとに評価し、条件が整えば追加の確認なしで申し込みます。到着予定の2分後までに受付できなければ終了します。受付終了時刻は予測しません。</p>
-          <label class="consent-label"><input id="automation-consent" type="checkbox"><span id="automation-consent-text">条件が整ったら、追加の確認なしで順番待ちを申し込むことに同意します</span></label>
-        </div>
+        <details class="additional-information"><summary>連絡事項を追加（任意）</summary><label>事前の連絡事項<textarea id="in-advance-information" maxlength="1000" rows="3"></textarea></label></details>
         <p id="join-error" class="form-error" role="alert"></p>
-        <button id="reload-edit" type="button" hidden>最新情報を読み込んで確認</button>
         <button type="submit" class="primary-button">この内容で順番待ちを申し込む</button>
       </form>
     </dialog>

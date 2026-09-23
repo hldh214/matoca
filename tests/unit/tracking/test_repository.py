@@ -29,7 +29,7 @@ def intent() -> QueueIntent:
     )
 
 
-def test_observed_zero_confirms_call_and_is_not_reopened(tmp_path: Path) -> None:
+def test_official_call_confirms_call_and_is_not_reopened(tmp_path: Path) -> None:
     repo = repository(tmp_path)
     repo.begin_intent(intent())
     repo.resolve_intent("intent-1", waiting_id=9001, number=42, count=5, observed_at=NOW)
@@ -39,7 +39,8 @@ def test_observed_zero_confirms_call_and_is_not_reopened(tmp_path: Path) -> None
             merchant_key="sawayaka",
             observed_at=NOW + timedelta(minutes=1),
             waiting_id=9001,
-            count=0,
+            count=2,
+            status=4,
         )
     )
     repo.record_read(
@@ -53,17 +54,84 @@ def test_observed_zero_confirms_call_and_is_not_reopened(tmp_path: Path) -> None
 
     session = repo.list_sessions()[0]
     assert session.status == "called"
-    assert session.called_at == datetime(2026, 9, 13, 3, 5, tzinfo=UTC)
+    assert session.called_at == NOW + timedelta(minutes=1)
 
 
-def test_initial_zero_resolves_intent_as_called(tmp_path: Path) -> None:
+def test_initial_zero_does_not_confirm_call(tmp_path: Path) -> None:
     repo = repository(tmp_path)
     repo.begin_intent(intent())
 
     session = repo.resolve_intent("intent-1", waiting_id=9001, number=42, count=0, observed_at=NOW)
 
+    assert session.status == "active"
+    assert session.called_at is None
+
+
+def test_creation_response_can_confirm_official_call(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    repo.begin_intent(intent())
+    session = repo.resolve_intent(
+        "intent-1", waiting_id=9001, number=42, count=None, status=4, observed_at=NOW
+    )
     assert session.status == "called"
-    assert session.called_at == datetime(2026, 9, 13, 3, 4, tzinfo=UTC)
+    assert session.called_at == NOW
+
+
+def test_detail_estimate_survives_list_only_read_and_restart(tmp_path: Path) -> None:
+    from matoca_service.matoca.models import Waiting
+
+    repo = repository(tmp_path)
+    repo.record_waiting(
+        "sawayaka",
+        NOW,
+        [
+            Waiting.model_validate(
+                {
+                    "id": 9001,
+                    "count": 20,
+                    "status": 2,
+                    "estimate_time": {"minutes": 53, "is_more": True},
+                }
+            )
+        ],
+    )
+    repo.record_waiting("sawayaka", NOW, [Waiting(id=9001, status=2)])
+    sample = repository(tmp_path).list_sessions()[0].observations[-1]
+    assert sample.count == 20
+    assert sample.official_minutes == 53
+    assert sample.official_is_more is True
+
+
+@pytest.mark.parametrize("status", [None, 2, 8, 5, 6, 9, 10, 11, "unknown"])
+def test_zero_without_official_call_is_not_called(tmp_path: Path, status: int | str | None) -> None:
+    from matoca_service.matoca.models import Waiting
+
+    repo = repository(tmp_path)
+    repo.record_waiting("sawayaka", NOW, [Waiting(id=9001, count=0, status=status)])
+    session = repo.list_sessions()[0]
+    assert session.status == "active"
+    assert session.called_at is None
+
+
+def test_official_call_from_waiting_survives_restart(tmp_path: Path) -> None:
+    from matoca_service.matoca.models import Waiting
+
+    repo = repository(tmp_path)
+    repo.record_waiting("sawayaka", NOW, [Waiting(id=9001, count=None, status=4)])
+    session = repository(tmp_path).list_sessions()[0]
+    assert session.status == "called"
+    assert session.called_at == NOW
+
+
+def test_called_ticket_disappearance_releases_current_queue(tmp_path: Path) -> None:
+    repo = repository(tmp_path)
+    repo.record_read(
+        QueueRead(merchant_key="sawayaka", waiting_id=1, observed_at=NOW, count=0, status=4)
+    )
+    repo.record_merchant_read("sawayaka", NOW + timedelta(minutes=1), [])
+    session = repo.list_sessions()[0]
+    assert session.status == "unknown"
+    assert session.called_at == NOW
 
 
 def test_successful_disappearance_is_unknown_not_called(tmp_path: Path) -> None:
@@ -257,7 +325,7 @@ def test_cancellation_request_prevents_older_zero_from_becoming_training_evidenc
 def test_explicit_cancellation_overrides_called_training_evidence(tmp_path: Path) -> None:
     repo = repository(tmp_path)
     repo.begin_intent(intent())
-    repo.resolve_intent("intent-1", waiting_id=9001, number=42, count=0, observed_at=NOW)
+    repo.resolve_intent("intent-1", waiting_id=9001, number=42, count=0, status=4, observed_at=NOW)
 
     repo.mark_cancelled("sawayaka", 9001, NOW + timedelta(minutes=1))
 

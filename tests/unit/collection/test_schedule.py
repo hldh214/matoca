@@ -27,6 +27,16 @@ def test_new_merchant_polls_every_five_minutes() -> None:
     assert interval == timedelta(minutes=5)
 
 
+def test_current_snapshot_schedule_does_not_require_history() -> None:
+    class NoHistory:
+        def poll_window(self, merchant_key: str, now: datetime) -> PollWindow | None:
+            raise AssertionError("Current cache must not read historical data")
+
+    assert PollSchedule(NoHistory(), use_history=False).next_interval(
+        "sawayaka", at_local_time(12, 0), False
+    ) == timedelta(minutes=1)
+
+
 def test_known_business_window_polls_every_minute() -> None:
     repository = WindowRepository(PollWindow(start=time(10, 30), end=time(23, 0)))
 

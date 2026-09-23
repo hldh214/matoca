@@ -30,6 +30,71 @@ def open_sawayaka_console(page: Page, browser_base_url: str) -> None:
     expect(page.get_by_text("現在の順番待ちはありません", exact=True)).to_be_visible()
 
 
+def test_queue_shows_only_official_groups_and_estimate(
+    safe_page: Page,
+    browser_base_url: str,
+    browser_service: BrowserFakeService,
+    assert_clean_browser: Callable[[], None],
+) -> None:
+    import json
+
+    from playwright.sync_api import expect
+
+    def queue_response(route: Route) -> None:
+        route.fulfill(
+            content_type="application/json",
+            body=json.dumps(
+                [
+                    {
+                        "merchant_key": "sawayaka",
+                        "shop_id": 3272,
+                        "waiting_id": 123,
+                        "shop_name": "テスト店",
+                        "number": 147,
+                        "status": "active",
+                        "official_minutes_at_submission": 100,
+                        "official_is_more_at_submission": False,
+                        "observations": [
+                            {
+                                "observed_at": "2026-09-21T04:20:00Z",
+                                "count": 20,
+                                "official_minutes": 53,
+                                "official_is_more": False,
+                            }
+                        ],
+                        "progress": {
+                            "linear_remaining_minutes": 80,
+                            "groups_ahead_of_linear": 12,
+                            "windows": [
+                                {"minutes": 5, "groups_per_minute": 1, "remaining_minutes": 20},
+                                {
+                                    "minutes": 30,
+                                    "groups_per_minute": None,
+                                    "remaining_minutes": None,
+                                },
+                            ],
+                        },
+                    }
+                ]
+            ),
+        )
+
+    safe_page.route("**/api/queues", queue_response)
+    safe_page.clock.install(time=datetime(2026, 9, 21, 4, 21, tzinfo=UTC))
+    safe_page.goto(f"{browser_base_url}/merchants/sawayaka")
+    panel = safe_page.get_by_role("region", name="現在の順番待ち")
+    expect(panel.locator(".queue-metrics")).to_contain_text("約53分")
+    expect(panel).not_to_contain_text("等速")
+    expect(panel).not_to_contain_text("予測")
+    expect(panel).to_contain_text("20組")
+    expect(panel.locator(".queue-call-time")).to_contain_text("14:13ごろ")
+    safe_page.reload()
+    expect(safe_page.locator(".queue-call-time")).to_contain_text("14:13ごろ")
+    safe_page.goto(browser_base_url)
+    expect(safe_page.locator(".personal-call-time")).to_contain_text("14:13ごろ")
+    assert_clean_browser()
+
+
 def wait_for_dialog_ready(
     page: Page,
     dialog_name: str,
@@ -65,7 +130,8 @@ def test_selects_merchant_and_filters_shops(
     expect(safe_page.locator("#total-count")).to_have_text("4")
     expect(safe_page.get_by_text("8組")).to_be_visible()
     expect(safe_page.get_by_text("25分")).to_be_visible()
-    expect(safe_page.get_by_text("予測 20〜30分・信頼度 中・実効7.5件")).to_be_visible()
+    expect(safe_page.get_by_text("予測 20〜30分・信頼度 中・実効7.5件")).to_have_count(0)
+    expect(safe_page.get_by_role("button", name="自動受付を設定")).to_have_count(0)
 
     safe_page.get_by_role("button", name="すべて").click()
     expect(safe_page.locator(".shop-row")).to_have_count(4)
@@ -112,7 +178,7 @@ def test_homepage_reload_renders_unresolved_submission_without_observations(
     assert_clean_browser()
 
 
-def test_sorts_favorites_and_opens_shop_history(
+def test_sorts_and_persists_favorites(
     safe_page: Page,
     browser_base_url: str,
     browser_service: BrowserFakeService,
@@ -138,42 +204,6 @@ def test_sorts_favorites_and_opens_shop_history(
     safe_page.reload()
     safe_page.get_by_role("button", name="すべて").click()
     expect(safe_page.locator(".shop-row").nth(0)).to_contain_text("受付停止テスト店")
-    safe_page.locator('.shop-row[data-id="3274"]').get_by_role("button", name="履歴を見る").click()
-    dialog = safe_page.get_by_role("dialog", name="受付停止テスト店の履歴")
-    expect(dialog).to_be_visible()
-    expect(dialog.get_by_label("日付")).to_have_value("2026-09-10")
-    expect(dialog.get_by_text("待ち組数（組）", exact=True)).to_be_visible()  # noqa: RUF001
-    expect(dialog.get_by_text("公式待ち時間（分）", exact=True)).to_be_visible()  # noqa: RUF001
-    expect(dialog.get_by_text("通常予測（分）", exact=True)).to_be_visible()  # noqa: RUF001
-    expect(dialog.locator("svg")).to_have_count(3)
-    expect(dialog.locator("path.history-line")).to_have_count(6)
-    dialog.get_by_label("日付").fill("2026-09-09")
-    expect(dialog.get_by_text("この日の記録はありません")).to_be_visible()
-    assert_clean_browser()
-
-
-@pytest.mark.parametrize("timezone_id", ["America/Los_Angeles"])
-def test_history_uses_tokyo_day_axis_and_client_timezone_labels(
-    safe_page: Page,
-    browser_base_url: str,
-    timezone_id: str,
-    assert_clean_browser: Callable[[], None],
-) -> None:
-    from playwright.sync_api import expect
-
-    del timezone_id
-    open_sawayaka_console(safe_page, browser_base_url)
-    safe_page.locator('.shop-row[data-id="3272"] .history-button').click()
-    dialog = safe_page.get_by_role("dialog", name="浜松テスト店の履歴")
-    expect(dialog.get_by_text("表示時刻: America/Los_Angeles")).to_be_visible()
-    first_path = dialog.locator("path.history-line").first.get_attribute("d")
-    assert first_path is not None and first_path.startswith("M279.")
-    expect(dialog.locator(".history-lower-bound")).to_have_count(1)
-    expect(dialog.get_by_text("以上を示す点があります")).to_be_visible()
-
-    dialog.get_by_label("日付").fill("2026-09-09")
-    expect(dialog.get_by_text("静岡県浜松市テスト町1-1")).to_be_visible()
-    expect(dialog.get_by_text("この日の記録はありません")).to_be_visible()
     assert_clean_browser()
 
 
@@ -317,9 +347,8 @@ def test_joins_and_cancels_a_synthetic_queue(
     }
     queue_band = safe_page.get_by_role("region", name="現在の順番待ち")
     expect(queue_band.get_by_text("101", exact=True)).to_be_visible()
-    expect(queue_band.locator(".queue-metrics span").last).to_have_text(
-        "残り予測20〜30分信頼度 中・実効7.5件"
-    )
+    expect(queue_band.locator(".queue-metrics")).to_contain_text("約25分")
+    expect(queue_band).not_to_contain_text("予測")
     join_actions = safe_page.get_by_role("button", name="順番待ち受付中", exact=True)
     expect(join_actions).to_have_count(4)
     for action in join_actions.all():
@@ -353,7 +382,7 @@ def test_joins_and_cancels_a_synthetic_queue(
     assert_clean_browser()
 
 
-def test_zero_count_create_remains_called_when_followup_queue_read_fails(
+def test_zero_groups_does_not_invent_call_when_followup_read_fails(
     safe_page: Page,
     browser_base_url: str,
     browser_service: BrowserFakeService,
@@ -374,8 +403,8 @@ def test_zero_count_create_remains_called_when_followup_queue_read_fails(
 
     expect(join_dialog).to_be_hidden()
     queue_band = safe_page.get_by_role("region", name="現在の順番待ち")
-    expect(queue_band.get_by_text("呼び出し済み", exact=True)).to_be_visible()
-    expect(queue_band.get_by_role("button", name="取消")).to_have_count(0)
+    expect(queue_band.get_by_text("呼び出し済み", exact=True)).to_have_count(0)
+    expect(queue_band.get_by_role("button", name="取消")).to_be_visible()
     assert_clean_browser()
 
 

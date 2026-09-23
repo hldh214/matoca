@@ -275,7 +275,9 @@ const cases = {
     app.document.hidden = false; await app.document.emit('visibilitychange'); await flush();
     for (const suffix of ['/console', '/api/queues']) assert.ok(app.state.calls.filter((call) => call.url.endsWith(suffix)).length >= 2);
     assert.equal(app.state.calls.filter((call) => call.url.endsWith('/refresh')).length, 0); await app.click('#refresh-button');
-    assert.equal(app.state.calls.filter((call) => call.url.endsWith('/refresh')).length, 1); assert.ok(app.state.calls.at(-1).url.endsWith('/console'));
+    assert.equal(app.state.calls.filter((call) => call.url.endsWith('/refresh')).length, 1);
+    assert.ok(app.state.calls.slice(-2).some((call) => call.url.endsWith('/console')));
+    assert.ok(app.state.calls.slice(-2).some((call) => call.url === '/api/queues'));
     for (const call of app.state.calls) {
       assert.ok(call.headers['X-Timezone']); assert.equal(call.mode, 'same-origin'); assert.equal(call.credentials, 'same-origin'); assert.equal(call.headers.Origin, undefined);
     }

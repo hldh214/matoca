@@ -1,7 +1,7 @@
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Literal, cast
 
 from matoca_service.matoca.models import Waiting
 from matoca_service.notifications.events import queue_observation
@@ -9,6 +9,7 @@ from matoca_service.storage.database import Database
 from matoca_service.tracking.models import (
     QueueIntent,
     QueueIntentSummary,
+    QueueMilestone,
     QueueObservation,
     QueueRead,
     QueueSession,
@@ -81,6 +82,30 @@ class QueueRepository:
             )
         )
 
+    def confirm_absent_intent(self, intent_id: str, observed_at: datetime) -> None:
+        """Release an explicitly reconciled intent, including retired arrival tasks."""
+
+        def write(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """UPDATE queue_intents SET status='failed', error_code='user_confirmed_absent'
+                   WHERE intent_id=? AND status IN ('pending', 'unresolved')""",
+                (intent_id,),
+            )
+            connection.execute(
+                """INSERT INTO automation_events (task_id, at, state, decision)
+                   SELECT id, ?, 'cancelled', '受付がないことを確認して終了しました'
+                   FROM automation_tasks WHERE intent_id=?""",
+                (_text(observed_at), intent_id),
+            )
+            connection.execute(
+                """UPDATE automation_tasks SET state='cancelled', version=version+1,
+                   next_evaluation_at=NULL, last_decision='受付がないことを確認して終了しました'
+                   WHERE intent_id=?""",
+                (intent_id,),
+            )
+
+        self._database.write(write)
+
     def resolve_intent(
         self,
         intent_id: str,
@@ -89,6 +114,7 @@ class QueueRepository:
         number: int | None,
         count: int | None,
         observed_at: datetime,
+        status: str | int | None = None,
     ) -> QueueSession:
         def write(connection: sqlite3.Connection) -> None:
             row = connection.execute(
@@ -127,9 +153,9 @@ class QueueRepository:
             session_id = connection.execute(
                 "SELECT session_id FROM queue_sessions WHERE intent_id = ?", (intent_id,)
             ).fetchone()[0]
-            self._save_observation(connection, session_id, observed_at, count)
-            if count == 0:
-                at = _text(_minute(observed_at))
+            self._save_observation(connection, session_id, observed_at, count, raw_status=status)
+            if status == 4:  # Official CALLING; zero groups alone is not a call.
+                at = _text(observed_at)
                 connection.execute(
                     """UPDATE queue_sessions SET status='called', called_at=?, terminal_at=?
                        WHERE session_id=?""",
@@ -153,6 +179,9 @@ class QueueRepository:
                     shop_id=int(item.shop_id) if item.shop_id is not None else None,
                     number=item.number,
                     count=item.count,
+                    status=item.status,
+                    official_minutes=item.estimate_time.minutes if item.estimate_time else None,
+                    official_is_more=item.estimate_time.is_more if item.estimate_time else None,
                     adult_count=item.adult_count,
                     child_count=item.child_count,
                 )
@@ -175,7 +204,7 @@ class QueueRepository:
             seen = {read.waiting_id for read in reads}
             active = connection.execute(
                 """SELECT session_id, waiting_id, cancellation_requested_at FROM queue_sessions
-                   WHERE merchant_key=? AND status='active'""",
+                   WHERE merchant_key=? AND status IN ('active', 'called')""",
                 (merchant_key,),
             ).fetchall()
             for session_id, waiting_id, cancellation_requested_at in active:
@@ -261,6 +290,17 @@ class QueueRepository:
             )
         else:
             session_id, status, cancellation_requested_at = cast(tuple[int, str, str | None], row)
+        if status == "called":
+            self._save_observation(
+                connection,
+                session_id,
+                read.observed_at,
+                read.count,
+                read.official_minutes,
+                read.official_is_more,
+                read.status,
+            )
+            return
         if status != "active":
             return
         if cancellation_requested_at is not None:
@@ -270,9 +310,17 @@ class QueueRepository:
                 "UPDATE queue_sessions SET cancellation_requested_at=NULL WHERE session_id=?",
                 (session_id,),
             )
-        self._save_observation(connection, session_id, read.observed_at, read.count)
-        if read.count == 0:
-            at = _text(_minute(read.observed_at))
+        self._save_observation(
+            connection,
+            session_id,
+            read.observed_at,
+            read.count,
+            read.official_minutes,
+            read.official_is_more,
+            read.status,
+        )
+        if read.status == 4:
+            at = _text(read.observed_at)
             connection.execute(
                 """UPDATE queue_sessions SET status='called', called_at=?, terminal_at=?
                    WHERE session_id=?""",
@@ -281,14 +329,66 @@ class QueueRepository:
 
     @staticmethod
     def _save_observation(
-        connection: sqlite3.Connection, session_id: int, observed_at: datetime, count: int | None
+        connection: sqlite3.Connection,
+        session_id: int,
+        observed_at: datetime,
+        count: int | None,
+        official_minutes: int | None = None,
+        official_is_more: bool | None = None,
+        raw_status: int | str | None = None,
     ) -> None:
         connection.execute(
-            """INSERT INTO queue_session_observations VALUES (?, ?, ?)
-               ON CONFLICT (session_id, observed_minute) DO UPDATE SET count=excluded.count""",
-            (session_id, _text(_minute(observed_at)), count),
+            """INSERT INTO queue_session_observations
+               (session_id, observed_minute, count, official_minutes, official_is_more, raw_status)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT (session_id, observed_minute) DO UPDATE SET
+               count=COALESCE(excluded.count, queue_session_observations.count),
+               official_minutes=COALESCE(excluded.official_minutes,
+                   queue_session_observations.official_minutes),
+               official_is_more=COALESCE(excluded.official_is_more,
+                   queue_session_observations.official_is_more),
+               raw_status=COALESCE(excluded.raw_status, queue_session_observations.raw_status)""",
+            (
+                session_id,
+                _text(_minute(observed_at)),
+                count,
+                official_minutes,
+                official_is_more,
+                raw_status,
+            ),
         )
-        queue_observation(connection, session_id, _minute(observed_at), count)
+        connection.execute(
+            "INSERT OR IGNORE INTO queue_status_observations VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, _text(observed_at), raw_status, count, official_minutes, official_is_more),
+        )
+        kind = (
+            {8: "pre_call", 4: "calling"}.get(raw_status) if isinstance(raw_status, int) else None
+        )
+        if kind:
+            connection.execute(
+                "INSERT OR IGNORE INTO queue_milestones VALUES (?, ?, ?, ?, 'api_observation', 60)",
+                (session_id, kind, _text(observed_at), _text(observed_at)),
+            )
+        queue_observation(
+            connection, session_id, _minute(observed_at), count if raw_status in (None, 2) else None
+        )
+
+    def confirm_notification(
+        self,
+        session_id: int,
+        kind: Literal["pre_call", "calling", "cancelled"],
+        occurred_at: datetime,
+        recorded_at: datetime,
+    ) -> None:
+        """Record user-confirmed LINE evidence, without rewriting API observations."""
+        if occurred_at.tzinfo is None or recorded_at.tzinfo is None or occurred_at > recorded_at:
+            raise ValueError("Invalid evidence timestamps")
+        self._database.write(
+            lambda c: c.execute(
+                "INSERT INTO queue_milestones VALUES (?, ?, ?, ?, 'line_notification_manual', 60)",
+                (session_id, kind, _text(occurred_at), _text(recorded_at)),
+            )
+        )
 
     def record_failure(self, merchant_key: str, observed_at: datetime, error_code: str) -> None:
         self._database.write(
@@ -334,6 +434,18 @@ class QueueRepository:
     def active_sessions(self) -> list[QueueSession]:
         return [item for item in self.list_sessions() if item.status == "active"]
 
+    def closed_waiting_ids(self, merchant_key: str) -> set[int]:
+        return self._database.read(
+            lambda connection: {
+                int(row[0])
+                for row in connection.execute(
+                    """SELECT waiting_id FROM queue_sessions
+                       WHERE merchant_key=? AND status IN ('unknown', 'cancelled')""",
+                    (merchant_key,),
+                )
+            }
+        )
+
     def list_unfinished_intents(self) -> list[QueueIntentSummary]:
         def read(connection: sqlite3.Connection) -> list[QueueIntentSummary]:
             rows = connection.execute(
@@ -372,7 +484,8 @@ class QueueRepository:
             result = []
             for row in rows:
                 observations = connection.execute(
-                    """SELECT observed_minute, count FROM queue_session_observations
+                    """SELECT observed_minute, count, official_minutes, official_is_more, raw_status
+                       FROM queue_session_observations
                        WHERE session_id=? ORDER BY observed_minute""",
                     (row[0],),
                 ).fetchall()
@@ -398,8 +511,28 @@ class QueueRepository:
                         status=row[16],
                         stale=row[18] is not None,
                         error_code=row[18],
+                        milestones=[
+                            QueueMilestone(
+                                kind=m[0],
+                                occurred_at=datetime.fromisoformat(m[1]),
+                                recorded_at=datetime.fromisoformat(m[2]),
+                                source=m[3],
+                                precision_seconds=m[4],
+                            )
+                            for m in connection.execute(
+                                """SELECT kind, occurred_at, recorded_at, source, precision_seconds
+                               FROM queue_milestones WHERE session_id=? ORDER BY occurred_at""",
+                                (row[0],),
+                            )
+                        ],
                         observations=[
-                            QueueObservation(observed_at=datetime.fromisoformat(o[0]), count=o[1])
+                            QueueObservation(
+                                observed_at=datetime.fromisoformat(o[0]),
+                                count=o[1],
+                                official_minutes=o[2],
+                                official_is_more=bool(o[3]) if o[3] is not None else None,
+                                raw_status=o[4],
+                            )
                             for o in observations
                         ],
                     )

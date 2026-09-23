@@ -41,7 +41,13 @@ def test_repository_returns_only_exact_confirmed_known_start_samples(tmp_path: P
             )
             if index in {0, 1}:
                 connection.execute(
-                    "INSERT INTO queue_session_observations VALUES (?, ?, 0)",
+                    """INSERT INTO queue_milestones
+                       VALUES (?, 'calling', ?, ?, 'api_observation', 60)""",
+                    (cursor.lastrowid, called.isoformat(), called.isoformat()),
+                )
+                connection.execute(
+                    """INSERT INTO queue_session_observations
+                       (session_id, observed_minute, count) VALUES (?, ?, 0)""",
                     (cursor.lastrowid, called.isoformat()),
                 )
 
@@ -67,8 +73,17 @@ def test_repository_does_not_leak_future_call_labels_into_historical_predictions
             (NOW.isoformat(), NOW.isoformat(), (NOW + timedelta(minutes=30)).isoformat()),
         )
         connection.execute(
-            "INSERT INTO queue_session_observations VALUES (?, ?, 0)",
+            """INSERT INTO queue_session_observations
+               (session_id, observed_minute, count) VALUES (?, ?, 0)""",
             (cursor.lastrowid, (NOW + timedelta(minutes=30)).isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO queue_milestones VALUES (?, 'calling', ?, ?, 'api_observation', 60)",
+            (
+                cursor.lastrowid,
+                (NOW + timedelta(minutes=30)).isoformat(),
+                (NOW + timedelta(minutes=30)).isoformat(),
+            ),
         )
 
     database.write(seed)
@@ -76,7 +91,7 @@ def test_repository_does_not_leak_future_call_labels_into_historical_predictions
     assert PredictionRepository(database).samples("merchant", NOW + timedelta(minutes=15)) == []
 
 
-def test_repository_excludes_called_status_without_an_observed_zero(tmp_path: Path) -> None:
+def test_repository_excludes_called_status_without_explicit_evidence(tmp_path: Path) -> None:
     database = Database(tmp_path / "data" / "matoca.sqlite3")
     database.initialize()
 

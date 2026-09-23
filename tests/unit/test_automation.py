@@ -61,6 +61,10 @@ def setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         'host="example.invalid"\napplication="test"\nlocale="ja_JP"\nprotocol_version="1"\nuser_agent="test"\n'
     )
     service = MatocaService(config, tmp_path / "state.json", tmp_path / "data/db.sqlite")
+    # Legacy replay fixtures explicitly retain history; the running service does not.
+    from matoca_service.storage.repositories import ShopRepository
+
+    service._shops = ShopRepository(service._database)
     client = FakeClient()
     other = FakeClient()
     now = [datetime.now(UTC)]
@@ -87,6 +91,25 @@ def setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(service, "_authenticated_read", read)
     runner = AutomationRunner(service, service._automation, now=lambda: now[0])
     service._automation_runner = runner
+
+    # Existing workflow tests have an established pre-call model. Dedicated
+    # cold-start tests below exercise the no-evidence behavior separately.
+    def seed_pre_call(c):
+        end = now[0] - timedelta(days=1)
+        start = end - timedelta(minutes=30)
+        cursor = c.execute(
+            """INSERT INTO queue_sessions
+            (merchant_key, shop_id, waiting_id, source, submitted_at, first_observed_at,
+             official_minutes_at_submission, official_is_more_at_submission, status)
+            VALUES ('sawayaka',3272,999999,'manual',?,?,30,0,'cancelled')""",
+            (start.isoformat(), start.isoformat()),
+        )
+        c.execute(
+            "INSERT INTO queue_milestones VALUES (?, 'pre_call', ?, ?, 'api_observation', 60)",
+            (cursor.lastrowid, end.isoformat(), end.isoformat()),
+        )
+
+    service._database.write(seed_pre_call)
     return service, runner, client, other, now
 
 
@@ -98,6 +121,41 @@ def request(arrival):
         timezone="Asia/Tokyo",
         consent=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_no_pre_call_samples_waits_until_arrival_even_with_early_tolerance(setup):
+    service, runner, client, _, now = setup
+    service._database.write(lambda c: c.execute("DELETE FROM queue_milestones"))
+    arrival = now[0] + timedelta(minutes=10)
+    task = await runner.create(request(arrival).model_copy(update={"early_tolerance_minutes": 120}))
+    await runner.run_once()
+    assert service._automation.get(task.id).state == "monitoring"
+    assert service._automation.list_decisions(task.id)[-1].reason_code == "pre_call_samples_missing"
+    assert client.posts == 0
+    now[0] = arrival
+    await runner.run_once()
+    assert service._automation.get(task.id).state == "queued"
+    assert client.posts == 1
+
+
+@pytest.mark.asyncio
+async def test_zero_groups_keeps_task_queued_until_official_call(setup):
+    service, runner, client, _, now = setup
+    task = await runner.create(request(now[0] + timedelta(minutes=30)))
+    await runner.run_once()
+    assert service._automation.get(task.id).state == "queued"
+    client.waiting[0] = client.waiting[0].model_copy(update={"count": 0, "status": 8})
+    now[0] += timedelta(minutes=1)
+    await runner.run_once()
+    assert service._automation.get(task.id).state == "queued"
+    assert service._queues.list_sessions()[0].called_at is None
+    client.waiting[0] = client.waiting[0].model_copy(update={"status": 4})
+    now[0] += timedelta(minutes=1)
+    await runner.run_once()
+    assert service._automation.get(task.id).state == "completed"
+    assert service._queues.list_sessions()[0].called_at == now[0]
+    assert client.posts == 1
 
 
 @pytest.mark.asyncio
@@ -201,200 +259,6 @@ def edit_body(task, **changes):
     }
 
 
-async def put_edit(service, task, **changes):
-    from matoca_service.web.app import create_app
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(service)), base_url="http://test"
-    ) as api:
-        return await api.put(
-            f"/api/automation/tasks/{task.id}",
-            json=edit_body(task, **changes),
-            headers={"origin": "http://test"},
-        )
-
-
-@pytest.mark.asyncio
-async def test_edit_preserves_history_and_simulation_reschedules_with_new_values(setup):
-    service, runner, client, _, now = setup
-    task = await runner.create(
-        request(now[0] + timedelta(minutes=90)).model_copy(update={"mode": "simulation"})
-    )
-    await runner.run_once()
-    task = service._automation.get(task.id)
-    history = service._automation.list_decisions(task.id)
-    events = service._automation.events()
-    response = await put_edit(service, task, adult_count=4, model_error_minutes=27)
-    assert response.status_code == 200
-    updated = service._automation.get(task.id)
-    assert (updated.adult_count, updated.model_error_minutes, updated.mode) == (4, 27, "simulation")
-    assert updated.state == "scheduled"
-    assert updated.version == task.version + 1
-    assert updated.next_evaluation_at == now[0]
-    assert updated.created_at == task.created_at
-    assert service._automation.list_decisions(task.id) == history
-    assert len(service._automation.events()) == len(events) + 1
-    assert client.posts == 0
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"mode": "live"},
-        {"shop_id": 99},
-        {"merchant_key": "other"},
-        {"consent": False},
-        {"expected_version": -1},
-    ],
-)
-async def test_edit_rejects_identity_mode_and_invalid_consent(setup, changes):
-    service, runner, _, _, now = setup
-    task = await runner.create(request(now[0] + timedelta(minutes=60)))
-    assert (await put_edit(service, task, **changes)).status_code == 422
-    assert service._automation.get(task.id) == task
-
-
-@pytest.mark.asyncio
-async def test_edit_background_version_conflict_and_invalid_fresh_form_leave_task_unchanged(setup):
-    service, runner, client, _, now = setup
-    task = await runner.create(request(now[0] + timedelta(minutes=60)))
-    await runner.run_once()
-    assert (await put_edit(service, task, adult_count=3)).status_code == 409
-    current = service._automation.get(task.id)
-    client.shop.forms = ShopForms(min_adult=1, max_adult=2)
-    context = await service.automation_edit_context(task.id)
-    bounds_response = await put_edit(
-        service, current, adult_count=3, form_revision=context.form_revision
-    )
-    assert bounds_response.status_code == 409
-    assert bounds_response.json()["detail"] == "大人の人数が受付範囲外です"
-    arrival_response = await put_edit(
-        service,
-        current,
-        adult_count=2,
-        arrival_at=(now[0] - timedelta(minutes=1)).isoformat(),
-        form_revision=context.form_revision,
-    )
-    assert arrival_response.status_code == 409
-    assert arrival_response.json()["detail"] == "到着予定は未来の日時を指定してください"
-    assert service._automation.get(task.id) == current
-
-
-@pytest.mark.asyncio
-async def test_edit_wins_operation_lock_and_prevents_stale_submission(setup, monkeypatch):
-    service, runner, client, _, now = setup
-    task = await runner.create(request(now[0] + timedelta(minutes=10)))
-    entered, release = asyncio.Event(), asyncio.Event()
-    original = client.get_shop
-
-    async def delayed(*args, **kwargs):
-        entered.set()
-        await release.wait()
-        return await original(*args, **kwargs)
-
-    monkeypatch.setattr(client, "get_shop", delayed)
-    editing = asyncio.create_task(
-        put_edit(service, task, arrival_at=(now[0] + timedelta(hours=2)).isoformat())
-    )
-    await asyncio.wait_for(entered.wait(), 2)
-    evaluation = asyncio.create_task(runner.run_once())
-    await asyncio.sleep(0)
-    release.set()
-    assert (await editing).status_code == 200
-    await evaluation
-    assert service._automation.get(task.id).state == "monitoring"
-    assert client.posts == 0
-
-
-@pytest.mark.asyncio
-async def test_submission_wins_edit_returns_conflict_without_payload_change(setup):
-    service, runner, client, _, now = setup
-    task = await runner.create(request(now[0] + timedelta(minutes=10)))
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def sending():
-        entered.set()
-        await release.wait()
-
-    client.on_send = sending
-    evaluation = asyncio.create_task(runner.run_once())
-    await entered.wait()
-    editing = asyncio.create_task(put_edit(service, task, adult_count=5))
-    await asyncio.sleep(0)
-    release.set()
-    await evaluation
-    assert (await editing).status_code == 409
-    current = service._automation.get(task.id)
-    assert (current.state, current.adult_count, client.posts) == ("queued", 2, 1)
-
-
-@pytest.mark.asyncio
-async def test_edit_refetch_after_await_rejects_intervening_cancel(setup, monkeypatch):
-    service, runner, client, _, now = setup
-    task = await runner.create(request(now[0] + timedelta(minutes=60)))
-
-    async def changing(*args, **kwargs):
-        service._automation.transition(task, "cancelled", "synthetic concurrent cancel", now[0])
-        return client.shop
-
-    monkeypatch.setattr(client, "get_shop", changing)
-    assert (await put_edit(service, task, adult_count=4)).status_code == 409
-    assert service._automation.get(task.id).state == "cancelled"
-    assert service._automation.get(task.id).adult_count == 2
-
-
-@pytest.mark.asyncio
-async def test_edit_context_checks_selected_meaning_then_accepts_explicit_new_choice(setup):
-    service, runner, client, _, now = setup
-    from matoca_service.web.app import create_app
-
-    client.shop.forms = ShopForms(
-        min_adult=1,
-        max_adult=8,
-        confirm_items=[
-            {
-                "enable": True,
-                "title": "席",
-                "sub_items": [
-                    {"enable": True, "sub_item_index": 3, "text": "テーブル"},
-                ],
-            }
-        ],
-    )
-    task = await runner.create(
-        request(now[0] + timedelta(minutes=60)).model_copy(update={"answer1": 3})
-    )
-    client.shop.forms.confirm_items[0]["sub_items"][0]["text"] = "カウンター"
-    await runner.run_once()
-    task = service._automation.get(task.id)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(service)), base_url="http://test"
-    ) as api:
-        context = await api.get(f"/api/automation/tasks/{task.id}/edit")
-    assert context.status_code == 200
-    assert context.json()["selections_compatible"] is False
-    assert context.json()["task"]["version"] == task.version
-    response = await put_edit(
-        service, task, answer1=3, form_revision=context.json()["form_revision"]
-    )
-    assert response.status_code == 200
-    assert "カウンター" in service._automation.get(task.id).form_signature
-
-
-@pytest.mark.asyncio
-async def test_edit_observed_form_revision_rejects_changed_meaning_but_ignores_defaults(setup):
-    service, runner, client, _, now = setup
-    task = await runner.create(request(now[0] + timedelta(minutes=60)))
-    client.shop.forms = ShopForms(
-        min_adult=1, max_adult=8, default_value_adult=4, decoration={"enable": True}
-    )
-    assert (await put_edit(service, task, adult_count=3)).status_code == 200
-    task = service._automation.get(task.id)
-    client.shop.forms = ShopForms(min_adult=1, max_adult=5)
-    assert (await put_edit(service, task, adult_count=3)).status_code == 409
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "state,intent",
@@ -456,37 +320,6 @@ async def test_form_defaults_metadata_and_still_valid_bounds_do_not_block(setup)
 
 
 @pytest.mark.asyncio
-async def test_simulation_records_decision_without_entering_submission_core(setup, monkeypatch):
-    service, runner, client, _, now = setup
-    payload = request(now[0] + timedelta(minutes=10)).model_dump()
-    payload["mode"] = "simulation"
-    task = await runner.create(AutomationRequest.model_validate(payload))
-
-    async def forbidden(*args, **kwargs):
-        pytest.fail("simulation entered submission core")
-
-    monkeypatch.setattr(service, "_create_waiting_unlocked", forbidden)
-    await runner.run_once()
-    assert service._automation.get(task.id).state == "simulated"
-    assert service._automation.list_decisions(task.id)[0].would_submit is True
-    assert service._automation.list_decisions(task.id)[0].official_minutes == 30
-    assert not service._queues.list_unfinished_intents()
-    assert not service._queues.list_sessions()
-    assert client.posts == 0
-    await runner.run_once()
-    assert len(service._automation.list_decisions(task.id)) == 1
-    from matoca_service.web.app import create_app
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(service)), base_url="http://test"
-    ) as api:
-        response = await api.get(f"/api/automation/tasks/{task.id}/history")
-        assert response.status_code == 200
-        assert response.json()[0]["would_submit"] is True
-        assert (await api.get("/api/automation/tasks/missing/history")).status_code == 404
-
-
-@pytest.mark.asyncio
 async def test_simulation_account_conflict_is_audited_without_queue_or_push_writes(setup):
     service, runner, _, other, now = setup
     payload = request(now[0] + timedelta(minutes=10)).model_dump()
@@ -496,7 +329,7 @@ async def test_simulation_account_conflict_is_audited_without_queue_or_push_writ
     await runner.run_once()
     assert service._automation.get(task.id).state == "needs_attention"
     assert service._automation.list_decisions(task.id)[0].would_submit is False
-    assert not service._queues.list_sessions()
+    assert [s.waiting_id for s in service._queues.list_sessions()] == [999999]
     assert (
         service._database.read(
             lambda c: c.execute("SELECT count(*) FROM notification_outbox").fetchone()[0]
@@ -536,54 +369,6 @@ def test_task_mode_cannot_be_assigned_into_live():
     simulation = AutomationRequest.model_validate(payload)
     with pytest.raises(ValidationError):
         simulation.mode = "live"
-
-
-@pytest.mark.asyncio
-async def test_replay_requires_offset_and_is_read_only_with_gap_and_future_cutoff(
-    setup, monkeypatch
-):
-    service, _, client, _, _ = setup
-    from matoca_service.web.app import create_app
-
-    at = datetime(2020, 1, 10, 3, tzinfo=UTC)
-    for minute, fresh in [(0, True), (1, False), (2, True)]:
-        service._shops.save_cycle(
-            CollectionWrite(
-                merchant_key="sawayaka",
-                observed_at=at + timedelta(minutes=minute),
-                shops=[ShopObservation(shop=client.shop, list_fresh=fresh, detail_fresh=fresh)],
-            )
-        )
-
-    def forbidden(*args, **kwargs):
-        pytest.fail("historical replay attempted a database write")
-
-    monkeypatch.setattr(service._database, "write", forbidden)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(service)), base_url="http://test"
-    ) as api:
-        url = "/api/automation/replay"
-        params = {
-            "merchant_key": "sawayaka",
-            "shop_id": 3272,
-            "day": at.date().isoformat(),
-            "arrival_at": (at + timedelta(minutes=30)).isoformat(),
-        }
-        result = await api.get(url, params=params)
-        assert result.status_code == 200
-        replay = result.json()
-        assert replay["timing_only"] is True
-        rows = {row["evaluated_at"]: row for row in replay["decisions"]}
-        assert (
-            rows[(at + timedelta(minutes=1)).isoformat().replace("+00:00", "Z")]["would_submit"]
-            is False
-        )
-        assert replay["first_would_submit_at"] == at.isoformat().replace("+00:00", "Z")
-        params["arrival_at"] = "2026-09-19T12:00:00"
-        assert (await api.get(url, params=params)).status_code == 422
-    assert not service._automation.list_tasks()
-    assert not service._queues.list_sessions()
-    assert client.posts == 0
 
 
 @pytest.mark.asyncio
@@ -696,11 +481,20 @@ def test_replay_uses_each_observation_time_for_labels_and_bounds(setup):
             (submitted.isoformat(), submitted.isoformat(), called.isoformat()),
         )
         connection.execute(
-            "INSERT INTO queue_session_observations VALUES (?, ?, 0)",
+            """INSERT INTO queue_session_observations
+               (session_id, observed_minute, count) VALUES (?, ?, 0)""",
             (cursor.lastrowid, called.isoformat()),
         )
 
     service._database.write(seed)
+    service._database.write(
+        lambda c: c.execute(
+            """INSERT INTO queue_milestones
+           SELECT session_id,'pre_call',?,?,'api_observation',60
+           FROM queue_sessions WHERE waiting_id=101""",
+            (called.isoformat(), called.isoformat()),
+        )
+    )
     query = ReplayRequest(
         merchant_key="sawayaka",
         shop_id=3272,
@@ -709,10 +503,10 @@ def test_replay_uses_each_observation_time_for_labels_and_bounds(setup):
     )
     result = replay(service._database, query, as_of=start + timedelta(minutes=2))
     assert len(result.decisions) == 3
-    assert result.decisions[0].prediction.fast_minutes == 30
-    assert result.decisions[1].prediction.fast_minutes == 30
+    assert result.decisions[0].prediction.fast_minutes == 0
+    assert result.decisions[1].prediction.fast_minutes == 0
     assert result.decisions[2].prediction.fast_minutes == 15
-    assert result.first_would_submit_at == start
+    assert result.first_would_submit_at is None
 
 
 def test_replay_excludes_next_japan_day_even_with_arrival_grace(setup):
@@ -835,37 +629,6 @@ def test_invalid_activation_is_rejected(changes):
                 **changes,
             }
         )
-
-
-@pytest.mark.asyncio
-async def test_automation_api_validates_origin_consent_and_cancellation(setup):
-    from matoca_service.web.app import create_app
-
-    service, _, client, _, now = setup
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(service)), base_url="http://test"
-    ) as api:
-        payload = request(now[0] + timedelta(hours=1)).model_dump(mode="json")
-        assert (await api.post("/api/automation/tasks", json=payload)).status_code == 403
-        payload["consent"] = False
-        invalid = await api.post(
-            "/api/automation/tasks", json=payload, headers={"origin": "http://test"}
-        )
-        assert invalid.status_code == 422
-        payload["consent"] = True
-        response = await api.post(
-            "/api/automation/tasks", json=payload, headers={"origin": "http://test"}
-        )
-        assert response.status_code == 201
-        task = response.json()
-        assert "form_signature" not in task
-        assert (await api.get("/api/automation/tasks")).json()[0]["id"] == task["id"]
-        cancelled = await api.delete(
-            f"/api/automation/tasks/{task['id']}", headers={"origin": "http://test"}
-        )
-        assert cancelled.status_code == 200
-        assert cancelled.json()["state"] == "cancelled"
-        assert client.posts == 0
 
 
 @pytest.mark.asyncio
@@ -1009,14 +772,14 @@ async def test_post_response_persistence_failure_recovers_linkage_without_replay
 async def test_prediction_delay_crossing_deadline_does_not_send(setup, monkeypatch):
     service, runner, client, _, now = setup
     task = await runner.create(request(now[0] + timedelta(minutes=10)))
-    original = service.predict
+    original = service.predict_pre_call
 
     async def delayed(*args):
         result = await original(*args)
         now[0] += timedelta(hours=1)
         return result
 
-    monkeypatch.setattr(service, "predict", delayed)
+    monkeypatch.setattr(service, "predict_pre_call", delayed)
     await runner.run_once()
     assert service._automation.get(task.id).state == "expired"
     assert client.posts == 0
@@ -1043,14 +806,14 @@ async def test_persistence_delay_cannot_authorize_hours_late_post(setup, monkeyp
 async def test_slow_prediction_does_not_send_using_stale_live_checks(setup, monkeypatch):
     service, runner, client, _, now = setup
     task = await runner.create(request(now[0] + timedelta(minutes=10)))
-    original = service.predict
+    original = service.predict_pre_call
 
     async def delayed(*args):
         result = await original(*args)
         now[0] += timedelta(minutes=2)
         return result
 
-    monkeypatch.setattr(service, "predict", delayed)
+    monkeypatch.setattr(service, "predict_pre_call", delayed)
     await runner.run_once()
     assert service._automation.get(task.id).state == "monitoring"
     assert client.posts == 0
@@ -1089,10 +852,10 @@ async def test_manual_unknown_intent_resolution_is_explicit_and_checks_account(s
 
 
 @pytest.mark.asyncio
-async def test_task_intent_cannot_bypass_task_resolution_via_manual_route(setup):
+async def test_retired_automation_intent_can_be_resolved_without_resubmission(setup):
     from matoca_service.web.app import create_app
 
-    service, runner, client, _, now = setup
+    service, runner, client, other, now = setup
     task = await runner.create(request(now[0] + timedelta(minutes=10)))
     client.error = True
     await runner.run_once()
@@ -1101,10 +864,21 @@ async def test_task_intent_cannot_bypass_task_resolution_via_manual_route(setup)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=create_app(service)), base_url="http://test"
     ) as api:
+        other.waiting = [Waiting(id=99)]
+        blocked = await api.post(
+            f"/api/queues/intents/{intent_id}/resolve",
+            json={"confirm_no_queue": True},
+            headers={"origin": "http://test"},
+        )
+        assert blocked.status_code == 409
+        assert len(service._queues.list_unfinished_intents()) == 1
+        other.waiting = []
         response = await api.post(
             f"/api/queues/intents/{intent_id}/resolve",
             json={"confirm_no_queue": True},
             headers={"origin": "http://test"},
         )
-        assert response.status_code == 409
-    assert len(service._queues.list_unfinished_intents()) == 1
+        assert response.status_code == 204
+    assert service._queues.list_unfinished_intents() == []
+    assert service._automation.get(task.id).state == "cancelled"
+    assert client.posts == 1

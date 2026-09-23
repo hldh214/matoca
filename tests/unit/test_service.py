@@ -1,6 +1,5 @@
 import asyncio
 import json
-import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta, tzinfo
 from pathlib import Path
@@ -39,6 +38,84 @@ from matoca_service.storage.models import (
 from matoca_service.storage.repositories import PreferenceRepository, ShopRepository
 
 type JwtFactory = Callable[[dict[str, Any]], str]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_status", ["unknown", "cancelled"])
+async def test_tracking_does_not_fetch_details_for_closed_sessions(
+    stored_service: tuple[MatocaService, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_status: str,
+) -> None:
+    service, _ = stored_service
+    waiting = Waiting(id=123, shop_id=456, status=5, count=10)
+    at = datetime.now(tz=UTC)
+    service._queues.record_waiting("sawayaka", at, [waiting])
+    service._queues._database.write(
+        lambda connection: connection.execute(
+            "UPDATE queue_sessions SET status=?, terminal_at=? WHERE waiting_id=123",
+            (terminal_status, at.isoformat()),
+        )
+    )
+    before = service._queues.list_sessions()[0].observations
+
+    class Client:
+        async def list_waiting(self) -> list[Waiting]:
+            return [waiting]
+
+        async def get_waiting(self, waiting_id: int) -> Waiting:
+            pytest.fail("Closed sessions must not trigger detail requests")
+
+    async def read(merchant: str, operation: Any) -> Any:
+        return await operation(Client())
+
+    monkeypatch.setattr(service, "_authenticated_read", read)
+    assert await service.tracking_read("sawayaka") == [waiting]
+    assert service._queues.list_sessions()[0].observations == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("list_count", [None, 3])
+async def test_tracking_reads_detail_when_waiting_list_omits_count(
+    stored_service: tuple[MatocaService, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    list_count: int | None,
+) -> None:
+    service, _ = stored_service
+
+    class Client:
+        async def list_waiting(self) -> list[Waiting]:
+            return [
+                Waiting(
+                    id=123, shop_id=456, adult_count=2, child_count=0, number=11, count=list_count
+                )
+            ]
+
+        async def get_waiting(self, waiting_id: int) -> Waiting:
+            assert waiting_id == 123
+            return Waiting.model_validate(
+                {
+                    "id": 123,
+                    "count": 3,
+                    "number": 11,
+                    "status": 8,
+                    "estimate_time": {"minutes": 12, "is_more": False},
+                }
+            )
+
+    async def read(merchant: str, operation: Any) -> Any:
+        assert merchant == "sawayaka"
+        return await operation(Client())
+
+    monkeypatch.setattr(service, "_authenticated_read", read)
+    result = await service.tracking_read("sawayaka")
+    assert result[0].count == 3
+    assert result[0].shop_id == 456
+    assert result[0].adult_count == 2
+    sessions = service._queues.list_sessions()
+    assert sessions[0].observations[-1].count == 3
+    assert sessions[0].observations[-1].official_minutes == 12
+    assert sessions[0].shop_id == 456
 
 
 @pytest.fixture
@@ -244,27 +321,16 @@ async def test_empty_complete_catalog_is_cached(
 
 
 @pytest.mark.asyncio
-async def test_snapshot_poll_window_does_not_block_loop(
+async def test_snapshot_does_not_read_prediction_history(
     stored_service: tuple[MatocaService, list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service, _ = stored_service
-    entered, release = threading.Event(), threading.Event()
 
-    def slow_window(key: str, now: datetime) -> None:
-        entered.set()
-        release.wait(0.4)
+    def unexpected(key: str, now: datetime) -> None:
+        raise AssertionError("Realtime snapshot must not use learned history")
 
-    monkeypatch.setattr(service._shops, "poll_window", slow_window)
-    task = asyncio.create_task(service.merchant_snapshot("sawayaka"))
-    started = asyncio.get_running_loop().time()
-    try:
-        while not entered.is_set():
-            await asyncio.sleep(0.001)
-        await asyncio.sleep(0.01)
-        assert asyncio.get_running_loop().time() - started < 0.2
-    finally:
-        release.set()
-        await task
+    monkeypatch.setattr(service._shops, "poll_window", unexpected)
+    await service.merchant_snapshot("sawayaka")
 
 
 @pytest.mark.asyncio
@@ -361,8 +427,8 @@ async def test_merchant_snapshot_marks_partial_latest_cycle_stale(
 @pytest.mark.parametrize(
     ("now", "window", "age", "expected_stale"),
     [
-        (datetime(2026, 9, 11, 8, tzinfo=UTC), None, timedelta(minutes=10), False),
-        (datetime(2026, 9, 11, 8, tzinfo=UTC), None, timedelta(minutes=11), True),
+        (datetime(2026, 9, 11, 8, tzinfo=UTC), None, timedelta(minutes=2), False),
+        (datetime(2026, 9, 11, 8, tzinfo=UTC), None, timedelta(minutes=3), True),
         (
             datetime(2026, 9, 11, 1, tzinfo=UTC),
             PollWindow(start=time(9), end=time(11)),
@@ -378,13 +444,13 @@ async def test_merchant_snapshot_marks_partial_latest_cycle_stale(
         (
             datetime(2026, 9, 11, 18, tzinfo=UTC),
             PollWindow(start=time(9), end=time(11)),
-            timedelta(minutes=30),
+            timedelta(minutes=2),
             False,
         ),
         (
             datetime(2026, 9, 11, 18, tzinfo=UTC),
             PollWindow(start=time(9), end=time(11)),
-            timedelta(minutes=31),
+            timedelta(minutes=3),
             True,
         ),
     ],

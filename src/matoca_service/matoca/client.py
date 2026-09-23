@@ -98,7 +98,18 @@ class MatocaClient:
         content = payload.get("content")
         if not isinstance(content, list):
             raise MatocaApiError("Matoca waiting response has an invalid content shape")
-        return [Waiting.model_validate(waiting) for waiting in content]
+        result: list[Waiting] = []
+        for item in content:
+            if isinstance(item, dict) and "waiting" in item:
+                record = item["waiting"]
+                shop = item.get("shop")
+                if not isinstance(record, dict) or not isinstance(shop, dict):
+                    raise MatocaApiError("Matoca waiting response has an invalid record shape")
+                record = {"shop_id": shop.get("id"), **record}
+            else:
+                record = item
+            result.append(Waiting.model_validate(record))
+        return result
 
     async def list_all_shops(self) -> list[Shop]:
         return (await self.read_shop_catalog()).shops
@@ -144,7 +155,8 @@ class MatocaClient:
         content = payload.get("content")
         if not isinstance(content, dict):
             raise MatocaApiError("Matoca waiting response has an invalid content shape")
-        return Waiting.model_validate(content)
+        # The detail endpoint identifies the ticket in its URL, not its response.
+        return Waiting.model_validate({"id": waiting_id, **content})
 
     async def create_waiting(self, request: CreateWaitingRequest) -> Waiting:
         response = await self._http.post(

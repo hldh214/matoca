@@ -1,7 +1,7 @@
 # Matoca Service
 
-A single-user Japanese queue console with persistent collection, shop history,
-favorites, queue tracking, arrival-time automation and optional browser Web Push.
+A single-user Japanese queue console with cached shops, favorites, immediate
+queue reception, current queue tracking and optional browser Web Push.
 Runs as one Python process and one Uvicorn worker behind a trusted access-control
 proxy, such as Cloudflare Zero Trust. There is no application login.
 
@@ -9,8 +9,8 @@ proxy, such as Cloudflare Zero Trust. There is no application login.
 
 | Merchant | Status | Capabilities |
 | --- | --- | --- |
-| 炭焼きレストラン さわやか | Supported | Availability, estimates, manual queue/cancellation, tracking, arrival tasks |
-| ラ・オハナ 横浜本牧 | Supported | Availability, estimates, manual queue/cancellation, tracking, arrival tasks |
+| 炭焼きレストラン さわやか | Supported | Availability, estimates, manual queue/cancellation, tracking |
+| ラ・オハナ 横浜本牧 | Supported | Availability, estimates, manual queue/cancellation, tracking |
 
 The tracked `src/matoca_service/merchant_registry.toml` defines the supported
 merchants. Adding a merchant requires capture-backed authentication and queue
@@ -61,95 +61,43 @@ HTTP on the private LAN supports the normal console. Web Push requires the exter
 configured HTTPS origin. Configure the proxy's trusted forwarding and access policy
 for the same origin, including `/sw.js`, `/manifest.webmanifest`, `/static/` and `/api/`.
 
+Frontend assets use content-versioned `/assets/<version>/` URLs, including relative
+JavaScript module imports. Restart the service after deploying asset changes.
+Versioned assets are immutable and cacheable for a year; HTML and API responses use
+`Cache-Control: no-store`. Legacy `/static/` URLs, the manifest and service worker
+require cache revalidation. Apply the same access policy to `/assets/`; proxy cache
+rules must respect these origin headers. An already-open tab needs a page reload
+to load the new asset version.
+
 ## Using the console
 
 The homepage shows current personal queues and the merchant selector. A merchant
 page shows cached shops, current waiting groups and the official waiting estimate.
-Filter available shops or all shops, search by name, sort, and pin favorites. Shop
-history includes date selection and observed minute values with visible gaps and
-freshness; snapshots alone do not establish an actual call time.
-
-`受付可能` is the initial filter and `公式目安` labels the official estimate.
+`受付可能` is the initial filter; `公式目安` is the restaurant’s estimate.
 店舗一覧は SQLite キャッシュから表示されます。現在の順番待ちは Matoca API から独立して更新されます。
+Default party: `大人 2 人` and `子ども 0 人`. Reception and cancellation are `手動操作`.
 
-The header settings default to two adults and zero children. Shop forms still apply
-their fresh limits and confirmation fields. Manual joining and cancellation require
-explicit actions. Queue admission is serialized across merchants for this account.
-The initial Japanese counters are `大人 2 人` and `子ども 0 人`; `手動操作` always
-requires its explicit confirmation independently of enabled arrival tasks.
-If a submission result is unknown, the UI exposes reconciliation and explicit
-confirmation that no queue exists; it never blindly repeats the submission.
+The initial filter shows available shops. Search by name, sort by official waiting
+time or groups, and pin favorites. Current queues appear above the shop list.
 
-Queue tracking persists minute observations and survives process restarts. Observed
-zero groups is the agreed proxy for a call, not a claim about an unobserved upstream
-status. Disappearance without a known cancellation is marked unknown. Adopted
-external tickets have unknown submission time and do not become training samples.
+The header settings default to two adults and zero children. Opening reception
+loads the shop's live form, applies its limits and defaults confirmation fields.
+Joining uses the shop coordinates. Reception and cancellation are explicit actions;
+no arrival-time scheduling, custom prediction or automatic submission runs.
+Uncertain submission results are reconciled without blindly repeating a request.
 
-Predictions use observed completed queue sessions and the official estimate frozen
-at submission: merchant, shop, and comparable day/time samples are combined with
-shrinkage and recency weighting. Cold starts use the official estimate. The UI shows
-fast/typical estimates, confidence, sample count and stale/lower-bound information.
-Predictions remain uncertain; neither the model nor collection predicts reception
-closing times.
+The queue panel shows the ticket number, groups ahead, latest official waiting
+estimate and observed status. Zero groups alone does not establish a call.
+Current queue tracking and credentials survive restarts. Disappearance without a
+confirmed cancellation is not treated as a confirmed call or cancellation.
 
-## Arrival-time automatic reception
-
-Select `自動受付を設定`, enter an arrival time and explicitly check the consent box.
-Only an enabled task authorizes a future automatic queue submission. The default
-early tolerance and model error are both 15 minutes. The task evaluates roughly
-once per minute using:
-
-```text
-now + max(0, fast prediction − model error) ≥ arrival − early tolerance
-```
-
-The runner verifies live availability, the account's current queues, form semantics
-and answer limits before submitting. It allows a two-minute grace period after
-arrival and otherwise expires. The UI exposes the decision, last/next evaluation,
-monitoring cancellation and uncertain-result resolution. Cancelling monitoring does
-not cancel an already-issued ticket; use the separate queue cancellation operation.
-Restart recovery follows the durable task/intent/session linkage without replaying
-ambiguous submissions. Changed forms or uncertain reads may require attention.
-
-Choose `シミュレーション` to observe the same timing conditions without submitting
-a queue request. A simulation records its decisions and ends when it first meets
-the conditions; it cannot be converted into a live task. Existing tasks remain live.
-The task panel exposes recorded estimates, timestamps and decision reasons.
-
-The shop history dialog also replays timing against stored observations for a
-selected Japanese date and arrival time. Replay only uses information available
-at each observation. It cannot reconstruct historical forms or account queues,
-so its results describe timing conditions, not successful reception or actual call
-accuracy. Missing and failed observations do not count as successful checks.
-
-Before arrival, automatic reception requires a fresh exact estimate. From arrival
-through the two-minute grace period, fresh account, availability and compatible
-form checks can permit reception even when the estimate is missing or a lower
-bound. No developer verification creates real tickets; the remaining actual-visit
-checklist is in [core validation](docs/validation/2026-09-19-core-validation.md).
-
-Historical official-estimate trends are separate from actual-wait predictions.
-The UI summarizes downward revisions over nonoverlapping intervals of about five
-minutes, using the past 30 days and explicitly labeled shop/time or merchant
-fallbacks. Failed, stale, closed, lower-bound and zero-estimate intervals are
-excluded. A suggested additional margin needs at least 20 eligible intervals;
-use the apply button to add it to the current form, capped at 120 minutes. Saved
-tasks and preferences are never changed automatically. Replay can compare the
-fixed margin with the suggestion available at each historical timestamp.
-
-Before submission begins, temporary read failures or unavailable reception keep
-monitoring through the inclusive two-minute arrival grace period. Once an intent
-exists, the runner reconciles the result without resubmitting. Task reasons
-distinguish closed hours, holidays, suspended reception and unavailable reception.
-Decision history shows the ten newest groups by default, combines consecutive
-identical decisions, and lets you expand all recorded groups.
-
-Tasks that have not begun submission can be edited from the task panel. Editing
-preserves their merchant, shop, execution mode and recorded history; arrival,
-party, answers and margins are revalidated against the fresh shop form. Saved
-values are prefilled and consent is confirmed again. If background evaluation or
-submission changes the task while the dialog is open, saving reports a conflict
-and keeps the entered values for review. Submitted tasks cannot be edited.
+The current ticket remains visible when switching merchants; cancellation always
+targets the merchant that issued it. The ticket includes party size, reception
+time, official call-time guidance and a map link. Manual refresh reloads the shop
+list and the latest tracked queue. Failed reads preserve the last ticket and offer
+retry. Favorites have their own filter, and each browser remembers search, sorting
+and filtering separately for each merchant. Reception/cancellation results and
+favorite-save failures are shown explicitly in Japanese.
 
 ## Browser notifications
 
@@ -160,14 +108,10 @@ app first. Then choose `テスト通知を送る` and confirm reception on the p
 Permission and physical delivery are user-initiated; automated tests do not prove
 delivery to a real phone. `通知を無効にする` removes this browser's subscription.
 
-Notifications cover automated submission success, tasks needing attention, failure
-or expiry, and waiting groups at 10/5/0. A separate estimate from successive fresh
-decreasing group counts notifies when the absolute predicted call target advances
-by at least ten minutes. Merely waiting ten minutes does not trigger it; gaps over
-ten minutes discard the trajectory baseline. This estimate is labeled as derived
-from decreasing groups and is not an observed call or reception-closing forecast.
+Notifications cover waiting-group thresholds at 10/5/0. These are observations,
+not predictions or proof of being called. Follow the restaurant’s official status.
 
-The server records notifications transactionally with task/queue changes, deduplicates
+The server records notifications transactionally with queue changes, deduplicates
 them durably, and dispatches without requiring an open page. Each subscription has
 independent retries after 1/5/15 minutes; expired 404/410 endpoints are removed.
 Delivery batches are limited to 20, network timeout is ten seconds, and the push
@@ -192,21 +136,18 @@ Writes require same-origin requests.
 
 ## Storage and collection
 
-The ignored `data/` directory uses mode 0700 and the database/WAL/SHM use 0600.
-Schema version 9 upgrades earlier databases additively: cached shops/observations,
-catalog membership, favorites, queue intents/sessions, arrival tasks, notification
-outbox/deliveries and trajectory baselines. Authentication remains outside SQLite.
-Keep the database and `state.json` together when backing up the instance.
+The ignored database files use 0600. A newly created data directory uses 0700;
+existing parent-directory permissions are never changed. Authentication remains in
+`state.json`. Back up both the database and state file.
 
-Collection is read-only and adaptive: five minutes without history, one minute in
-learned operating windows or with an active arrival task, fifteen minutes outside
-the window. Merchant-specific durable backoff applies to automatic and manual reads.
-Static identity refreshes daily in Tokyo time; live forms and observations refresh
-each cycle. Complete catalogs replace membership; partial/error reads preserve
-known data with stale status. Raw observations remain for 180 days; older fresh
-observations roll up into five-minute aggregates. SQLite and state locking run off
-the event loop. Real state, captures, `.env`, `line_client.toml` and `data/` are never
-committed.
+Shop identity is cached and refreshed daily in Tokyo time. Current availability,
+groups and official estimates refresh in the background and on manual refresh.
+Current shop snapshots are overwritten instead of accumulating prediction history.
+Existing historical data is preserved, but prediction-driven collection, analysis
+and arrival tasks are no longer run. Complete catalogs replace membership;
+partial/error reads retain known data with stale status. Queue tracking remains
+active independently of shop snapshots. Storage runs off the event loop.
+Real state, captures, `.env`, `line_client.toml` and `data/` are never committed.
 
 ## Capture-backed LINE authentication
 

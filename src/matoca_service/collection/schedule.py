@@ -12,8 +12,9 @@ class PollWindowRepository(Protocol):
 
 
 class PollSchedule:
-    def __init__(self, repository: PollWindowRepository) -> None:
+    def __init__(self, repository: PollWindowRepository, *, use_history: bool = True) -> None:
         self._repository = repository
+        self._use_history = use_history
 
     def next_interval(
         self,
@@ -21,7 +22,7 @@ class PollSchedule:
         now: datetime,
         has_active_task: bool,
     ) -> timedelta:
-        if has_active_task:
+        if has_active_task or not self._use_history:
             return timedelta(minutes=1)
 
         window = self._repository.poll_window(merchant_key, now)

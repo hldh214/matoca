@@ -19,6 +19,15 @@ from matoca_service.tracking.models import QueueObservation, QueueSession
 from matoca_service.web.app import create_app
 
 
+def test_removed_prediction_routes_are_not_exposed() -> None:
+    app = create_app(service=FakeDashboardService())
+    paths = {route.path for route in app.routes if isinstance(route, APIRoute)}
+    assert not any(path.startswith("/api/automation") for path in paths)
+    assert not any(path.endswith(("/trend", "/history")) and "/shops/" in path for path in paths)
+    assert "/api/merchants/{merchant_key}/waiting" in paths
+    assert "/api/queues/intents/{intent_id}/resolve" in paths
+
+
 class FakeDashboardService:
     def __init__(self) -> None:
         self.preferences = PartyPreferences(default_adult_count=2, default_child_count=0)
@@ -191,7 +200,8 @@ async def test_home_page_renders_japanese_merchant_selector_without_tokens() -> 
     assert "access_token" not in response.text
     assert "liff-secret" not in response.text
     assert 'id="personal-queues"' in response.text
-    assert "/static/tracking.js" in response.text
+    assert "/tracking.js" in response.text
+    assert "/assets/" in response.text
 
 
 @pytest.mark.asyncio
@@ -206,7 +216,15 @@ async def test_queues_api_returns_cross_merchant_selected_tracking_fields() -> N
     queue = response.json()[0]
     assert queue["merchant_name"] == "炭焼きレストラン さわやか"
     assert queue["shop_name"] == "浜松テスト店"
-    assert queue["observations"] == [{"observed_at": "2026-09-13T03:04:00Z", "count": 5}]
+    assert queue["observations"] == [
+        {
+            "observed_at": "2026-09-13T03:04:00Z",
+            "count": 5,
+            "official_minutes": None,
+            "official_is_more": None,
+            "raw_status": None,
+        }
+    ]
     assert "waiting_time" not in queue
 
 
@@ -242,7 +260,7 @@ async def test_merchant_page_renders_japanese_shop_console_shell() -> None:
     assert "公式目安" in response.text
     assert "設定" in response.text
     assert "地域別" not in response.text
-    assert response.text.count('class="dialog-close" type="button"') == 4
+    assert response.text.count('class="dialog-close" type="button"') == 3
 
 
 @pytest.mark.asyncio
@@ -411,6 +429,23 @@ async def test_shop_detail_api_returns_structured_data() -> None:
     assert response.status_code == 200
     assert response.json()["id"] == 3272
     assert response.json()["waiting_time"] == {"minutes": 90, "is_more": True}
+
+
+@pytest.mark.asyncio
+async def test_missing_waiting_detail_returns_not_found() -> None:
+    class MissingWaitingService(FakeDashboardService):
+        async def waiting_detail(self, merchant_key: str, waiting_id: int) -> Waiting:
+            response = httpx.Response(404, request=httpx.Request("GET", "https://example.test"))
+            response.raise_for_status()
+            raise AssertionError("unreachable")
+
+    app = create_app(MissingWaitingService())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/waiting/123")
+    assert response.status_code == 404
+    assert response.json()["detail"]
 
 
 @pytest.mark.asyncio

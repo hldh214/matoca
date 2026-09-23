@@ -36,20 +36,7 @@ async def test_analytics_routes_return_structured_history_and_favorites() -> Non
     ) as client:
         history = await client.get("/api/merchants/sawayaka/shops/3272/history?day=2026-09-10")
         favorites = await client.get("/api/favorites")
-    assert history.json() == {
-        "day": "2026-09-10",
-        "shop": {
-            "id": 3272,
-            "name": "sawayaka",
-            "sub_name": None,
-            "address": None,
-            "tel": None,
-            "lat": None,
-            "lng": None,
-        },
-        "observations": [],
-        "trend": None,
-    }
+    assert history.status_code == 404
     assert favorites.json() == {"sawayaka": [3272]}
 
 
@@ -61,9 +48,7 @@ async def test_trend_route_returns_insufficient_evidence_and_unknown_shop() -> N
     ) as client:
         response = await client.get("/api/merchants/sawayaka/shops/3272/trend")
         missing = await client.get("/api/merchants/sawayaka/shops/9999/trend")
-    assert response.status_code == 200
-    assert response.json()["suggested_addition_minutes"] is None
-    assert response.json()["sample_count"] == 0
+    assert response.status_code == 404
     assert missing.status_code == 404
 
 

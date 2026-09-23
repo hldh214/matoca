@@ -279,6 +279,39 @@ def _create_automation_decisions(connection: sqlite3.Connection) -> None:
     )
 
 
+def _add_queue_estimates(connection: sqlite3.Connection) -> None:
+    connection.execute("ALTER TABLE queue_session_observations ADD COLUMN official_minutes INTEGER")
+    connection.execute("ALTER TABLE queue_session_observations ADD COLUMN official_is_more INTEGER")
+
+
+def _add_queue_status_evidence(connection: sqlite3.Connection) -> None:
+    connection.execute("ALTER TABLE queue_session_observations ADD COLUMN raw_status")
+    connection.execute("""CREATE TABLE queue_status_observations (
+        session_id INTEGER NOT NULL REFERENCES queue_sessions(session_id),
+        observed_at TEXT NOT NULL, raw_status, count INTEGER,
+        official_minutes INTEGER, official_is_more INTEGER,
+        PRIMARY KEY(session_id, observed_at))""")
+    connection.execute("""CREATE TABLE queue_milestones (
+        session_id INTEGER NOT NULL REFERENCES queue_sessions(session_id),
+        kind TEXT NOT NULL CHECK(kind IN ('pre_call', 'calling', 'cancelled')),
+        occurred_at TEXT NOT NULL, recorded_at TEXT NOT NULL,
+        source TEXT NOT NULL CHECK(source IN ('api_observation', 'line_notification_manual')),
+        precision_seconds INTEGER NOT NULL,
+        PRIMARY KEY(session_id, kind, source))""")
+
+
+def _create_current_shop_state(connection: sqlite3.Connection) -> None:
+    connection.execute("CREATE TABLE shop_current_state AS SELECT * FROM shop_observations WHERE 0")
+    connection.execute(
+        "CREATE UNIQUE INDEX shop_current_key ON shop_current_state(merchant_key, shop_id)"
+    )
+    connection.execute(
+        """INSERT INTO shop_current_state SELECT o.* FROM shop_observations o
+        WHERE o.observed_minute=(SELECT MAX(p.observed_minute) FROM shop_observations p
+        WHERE p.merchant_key=o.merchant_key AND p.shop_id=o.shop_id)"""
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _bootstrap_metadata,
     _create_business_storage,
@@ -290,6 +323,9 @@ MIGRATIONS: tuple[Migration, ...] = (
     _create_automation,
     _create_notifications,
     _create_automation_decisions,
+    _add_queue_estimates,
+    _add_queue_status_evidence,
+    _create_current_shop_state,
 )
 
 

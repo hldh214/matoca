@@ -35,6 +35,10 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .personal-queue-row { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; color: #fff; text-decoration: none; }
 .personal-queue-row + .personal-queue-row { border-top: 1px solid #555951; }
 .personal-queue-row span { color: #d5d8d2; font-size: 13px; }
+.personal-queue-row { flex-wrap: wrap; }
+.personal-queue-refresh { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.personal-queue-refresh p:empty { display: none; }
+.personal-call-time { color: #fff; font-size: 18px; }
 
 .page-title p, .queue-band p, .dialog-kicker { margin: 0 0 6px; color: #70746e; font-size: 12px; font-weight: 700; }
 

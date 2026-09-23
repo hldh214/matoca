@@ -1,11 +1,13 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date
+from hashlib import sha256
 from json import JSONDecodeError
 from pathlib import Path
 from typing import Protocol, cast
 from urllib.parse import urlsplit
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi import Path as PathParameter
@@ -13,16 +15,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from matoca_service.analytics.models import FavoriteState, FavoriteUpdate, ShopHistory
-from matoca_service.automation.decisions import TimingDecision
-from matoca_service.automation.models import (
-    AutomationEditContext,
-    AutomationEditRequest,
-    AutomationRequest,
-    AutomationTask,
-)
-from matoca_service.automation.replay import ReplayRequest, ReplayResult
 from matoca_service.automation.repository import TaskConflictError
 from matoca_service.config import RuntimeSettings
 from matoca_service.console import MerchantConsoleData
@@ -45,6 +40,40 @@ from matoca_service.tracking.models import QueueIntentSummary, QueueSession
 from matoca_service.web.timezone import localize_datetime, parse_timezone
 
 WEB_ROOT = Path(__file__).parent
+
+
+def asset_version() -> str:
+    digest = sha256()
+    for path in sorted((WEB_ROOT / "static").rglob("*")):
+        if path.is_file():
+            digest.update(path.relative_to(WEB_ROOT).as_posix().encode())
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
+    return digest.hexdigest()[:20]
+
+
+class CachePolicy:
+    def __init__(self, app: ASGIApp, asset_prefix: str) -> None:
+        self.app = app
+        self.asset_prefix = asset_prefix
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async def send_response(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                path = scope.get("path", "")
+                policy = "no-store"
+                if path.startswith(self.asset_prefix) and message["status"] in {200, 304}:
+                    policy = "public, max-age=31536000, immutable"
+                elif path.startswith("/static/") or path in {"/sw.js", "/manifest.webmanifest"}:
+                    policy = "no-cache"
+                headers = [
+                    (k, v) for k, v in message.get("headers", []) if k.lower() != b"cache-control"
+                ]
+                message["headers"] = [*headers, (b"cache-control", policy.encode())]
+            await send(message)
+
+        await self.app(scope, receive, send_response)
 
 
 def require_same_origin(request: Request) -> None:
@@ -117,17 +146,7 @@ class AnalyticsService(Protocol):
     ) -> FavoriteState: ...
 
 
-class AutomationService(Protocol):
-    async def automation_history(self, task_id: str) -> list[TimingDecision]: ...
-    async def automation_replay(self, request: ReplayRequest) -> ReplayResult: ...
-    async def automation_tasks(self) -> list[AutomationTask]: ...
-    async def create_automation_task(self, request: AutomationRequest) -> AutomationTask: ...
-    async def automation_edit_context(self, task_id: str) -> AutomationEditContext: ...
-    async def edit_automation_task(
-        self, task_id: str, request: AutomationEditRequest
-    ) -> AutomationTask: ...
-    async def cancel_automation_task(self, task_id: str) -> AutomationTask: ...
-    async def resolve_automation_task(self, task_id: str) -> AutomationTask: ...
+class ManualIntentService(Protocol):
     async def resolve_manual_intent(self, intent_id: str) -> None: ...
 
 
@@ -152,7 +171,7 @@ def create_app(
         dashboard_service = service
         coordinator = collection_coordinator
     analytics = analytics_service or cast(AnalyticsService, dashboard_service)
-    automation = cast(AutomationService, dashboard_service)
+    manual_intents = cast(ManualIntentService, dashboard_service)
     notifications = notification_service or (
         dashboard_service.notifications if isinstance(dashboard_service, MatocaService) else None
     )
@@ -169,13 +188,6 @@ def create_app(
         )
         if tracking is not None:
             tracking.start()
-        automatic = (
-            dashboard_service.automation_coordinator
-            if isinstance(dashboard_service, MatocaService)
-            else None
-        )
-        if automatic is not None:
-            automatic.start()
         if notifications is not None:
             notifications.dispatcher.start()
         try:
@@ -183,8 +195,6 @@ def create_app(
         finally:
             if notifications is not None:
                 await notifications.dispatcher.stop()
-            if automatic is not None:
-                await automatic.stop()
             if tracking is not None:
                 await tracking.stop()
             if coordinator is not None:
@@ -192,7 +202,11 @@ def create_app(
 
     app = FastAPI(title="Matoca", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=WEB_ROOT / "static"), name="static")
+    asset_prefix = f"/assets/{asset_version()}/"
+    app.mount(asset_prefix.rstrip("/"), StaticFiles(directory=WEB_ROOT / "static"), name="assets")
+    app.add_middleware(CachePolicy, asset_prefix=asset_prefix)
     templates = Jinja2Templates(directory=WEB_ROOT / "templates")
+    templates.env.globals["asset_url"] = lambda name: asset_prefix + name.lstrip("/")
 
     @app.get("/sw.js")
     async def service_worker() -> FileResponse:
@@ -277,83 +291,6 @@ def create_app(
     async def task_conflict_handler(request: Request, error: TaskConflictError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(error)})
 
-    @app.get("/api/automation/tasks", response_model=list[AutomationTask])
-    async def automation_tasks_api() -> list[AutomationTask]:
-        return await automation.automation_tasks()
-
-    @app.get("/api/automation/tasks/{task_id}/history", response_model=list[TimingDecision])
-    async def automation_history_api(task_id: str) -> list[TimingDecision]:
-        try:
-            return await automation.automation_history(task_id)
-        except LookupError as error:
-            raise HTTPException(404, "自動受付が見つかりません") from error
-
-    @app.get("/api/automation/replay", response_model=ReplayResult)
-    async def automation_replay_api(request: Request) -> ReplayResult | JSONResponse:
-        try:
-            payload = ReplayRequest.model_validate(dict(request.query_params))
-        except ValidationError:
-            return JSONResponse(
-                status_code=422,
-                content={
-                    "detail": "加盟店・店舗・日本時間の日付・時差を含む到着予定を確認してください"
-                },
-            )
-        return await automation.automation_replay(payload)
-
-    @app.post("/api/automation/tasks", response_model=AutomationTask, status_code=201)
-    async def create_automation_api(request: Request) -> AutomationTask | JSONResponse:
-        require_same_origin(request)
-        try:
-            payload = AutomationRequest.model_validate(await request.json())
-        except JSONDecodeError, UnicodeDecodeError, ValidationError:
-            return JSONResponse(
-                status_code=422, content={"detail": "到着予定・人数・同意内容を確認してください"}
-            )
-        return await automation.create_automation_task(payload)
-
-    @app.get("/api/automation/tasks/{task_id}/edit", response_model=AutomationEditContext)
-    async def automation_edit_context_api(task_id: str) -> AutomationEditContext:
-        try:
-            return await automation.automation_edit_context(task_id)
-        except LookupError as error:
-            raise HTTPException(404, "自動受付が見つかりません") from error
-
-    @app.put("/api/automation/tasks/{task_id}", response_model=AutomationTask)
-    async def edit_automation_api(task_id: str, request: Request) -> AutomationTask | JSONResponse:
-        require_same_origin(request)
-        try:
-            payload = AutomationEditRequest.model_validate(await request.json())
-        except JSONDecodeError, UnicodeDecodeError, ValidationError:
-            return JSONResponse(
-                status_code=422,
-                content={
-                    "detail": "到着予定・人数・同意内容を確認してください。"
-                    "加盟店・店舗・実行方法は変更できません"
-                },
-            )
-        try:
-            return await automation.edit_automation_task(task_id, payload)
-        except LookupError as error:
-            raise HTTPException(404, "自動受付が見つかりません") from error
-
-    @app.delete("/api/automation/tasks/{task_id}", response_model=AutomationTask)
-    async def cancel_automation_api(task_id: str, request: Request) -> AutomationTask:
-        require_same_origin(request)
-        try:
-            return await automation.cancel_automation_task(task_id)
-        except LookupError as error:
-            raise HTTPException(status_code=404, detail="自動受付が見つかりません") from error
-
-    @app.post("/api/automation/tasks/{task_id}/resolve", response_model=AutomationTask)
-    async def resolve_automation_api(task_id: str, request: Request) -> AutomationTask:
-        require_same_origin(request)
-        await require_absence_confirmation(request)
-        try:
-            return await automation.resolve_automation_task(task_id)
-        except LookupError as error:
-            raise HTTPException(status_code=404, detail="自動受付が見つかりません") from error
-
     async def require_absence_confirmation(request: Request) -> None:
         try:
             payload = await request.json()
@@ -370,7 +307,7 @@ def create_app(
     async def resolve_manual_intent_api(intent_id: str, request: Request) -> None:
         require_same_origin(request)
         await require_absence_confirmation(request)
-        await automation.resolve_manual_intent(intent_id)
+        await manual_intents.resolve_manual_intent(intent_id)
 
     @app.exception_handler(UnknownMerchantError)
     async def unknown_merchant_handler(
@@ -449,7 +386,12 @@ def create_app(
         waiting_id: int = PathParameter(ge=1),
         merchant: str = Query(default="sawayaka"),
     ) -> Waiting:
-        return await dashboard_service.waiting_detail(merchant, waiting_id)
+        try:
+            return await dashboard_service.waiting_detail(merchant, waiting_id)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 404:
+                raise HTTPException(404, "順番待ちが見つかりません") from None
+            raise
 
     @app.get("/api/merchants", response_model=list[MerchantSummary])
     async def merchants_api() -> list[MerchantSummary]:
@@ -462,22 +404,6 @@ def create_app(
     @app.get("/api/favorites", response_model=dict[str, list[int]])
     async def favorites_api() -> dict[str, list[int]]:
         return await analytics.favorites()
-
-    @app.get("/api/merchants/{merchant_key}/shops/{shop_id}/history", response_model=ShopHistory)
-    async def shop_history_api(
-        merchant_key: str, day: date, shop_id: int = PathParameter(ge=1)
-    ) -> ShopHistory:
-        try:
-            return await analytics.shop_history(merchant_key, shop_id, day)
-        except LookupError as error:
-            raise HTTPException(status_code=404, detail="店舗が見つかりません") from error
-
-    @app.get("/api/merchants/{merchant_key}/shops/{shop_id}/trend", response_model=TrendSummary)
-    async def shop_trend_api(merchant_key: str, shop_id: int = PathParameter(ge=1)) -> TrendSummary:
-        try:
-            return await analytics.shop_trend(merchant_key, shop_id)
-        except LookupError as error:
-            raise HTTPException(status_code=404, detail="店舗が見つかりません") from error
 
     @app.put("/api/merchants/{merchant_key}/shops/{shop_id}/favorite", response_model=FavoriteState)
     async def favorite_api(

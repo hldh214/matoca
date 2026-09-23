@@ -51,11 +51,18 @@ def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[MatocaServ
             (submitted.isoformat(), submitted.isoformat(), called.isoformat()),
         )
         connection.execute(
-            "INSERT INTO queue_session_observations VALUES (?, ?, 0)",
+            """INSERT INTO queue_session_observations
+               (session_id, observed_minute, count) VALUES (?, ?, 0)""",
             (cursor.lastrowid, called.isoformat()),
         )
 
     result._database.write(seed_sample)
+    result._database.write(
+        lambda c: c.execute(
+            "INSERT INTO queue_milestones VALUES (1, 'calling', ?, ?, 'api_observation', 60)",
+            ((now - timedelta(days=1)).isoformat(), (now - timedelta(days=1)).isoformat()),
+        )
+    )
     return result, now
 
 
@@ -127,12 +134,12 @@ def seed_active_queue(
 
 
 @pytest.mark.asyncio
-async def test_console_enriches_fresh_exact_estimate_and_suppresses_stale_or_lower_bound(
+async def test_console_never_adds_predictions(
     service: tuple[MatocaService, datetime],
 ) -> None:
     app, now = service
     save_observation(app, now, minutes=30)
-    assert (await app.merchant_console("sawayaka")).shops[0].prediction is not None
+    assert (await app.merchant_console("sawayaka")).shops[0].prediction is None
 
     save_observation(app, now + timedelta(minutes=1), minutes=30, is_more=True)
     assert (await app.merchant_console("sawayaka")).shops[0].prediction is None
@@ -184,7 +191,7 @@ async def test_history_trends_are_as_of_day_end_or_now_and_storage_is_off_loop(
 
 
 @pytest.mark.asyncio
-async def test_queues_enrich_only_fresh_active_exact_sessions(
+async def test_queues_never_add_predictions(
     service: tuple[MatocaService, datetime],
 ) -> None:
     app, now = service
@@ -208,7 +215,8 @@ async def test_queues_enrich_only_fresh_active_exact_sessions(
                 ),
             )
             connection.execute(
-                "INSERT INTO queue_session_observations VALUES (?, ?, 3)",
+                """INSERT INTO queue_session_observations
+                   (session_id, observed_minute, count) VALUES (?, ?, 3)""",
                 (cursor.lastrowid, now.isoformat()),
             )
 
@@ -217,7 +225,7 @@ async def test_queues_enrich_only_fresh_active_exact_sessions(
     predictions = {
         item.waiting_id: item.prediction for item in queues if hasattr(item, "waiting_id")
     }
-    assert predictions[9101] is not None
+    assert predictions[9101] is None
     assert predictions[9102] is None
     assert predictions[9103] is None
 
@@ -254,7 +262,7 @@ async def test_queues_mark_an_active_session_stale_when_latest_observation_is_to
     assert session.error_code is None
     assert session.stale is True
     assert session.prediction is None
-    assert session.trajectory_minutes is None
+    assert "trajectory_minutes" not in session.model_dump()
 
 
 @pytest.mark.asyncio
@@ -274,7 +282,7 @@ async def test_queue_observation_remains_fresh_through_the_third_minute(
     session = next(item for item in await app.queues() if getattr(item, "waiting_id", None) == 9204)
 
     assert session.stale is False
-    assert session.prediction is not None
+    assert session.prediction is None
 
 
 @pytest.mark.asyncio
@@ -302,7 +310,7 @@ async def test_active_queue_without_observations_is_stale(
     assert session.observations == []
     assert session.stale is True
     assert session.prediction is None
-    assert session.trajectory_minutes is None
+    assert "trajectory_minutes" not in session.model_dump()
 
 
 @pytest.mark.asyncio
@@ -333,7 +341,7 @@ async def test_queues_suppress_trajectory_after_an_explicit_read_failure(
     assert session.stale is True
     assert session.error_code == "timeout"
     assert session.prediction is None
-    assert session.trajectory_minutes is None
+    assert "trajectory_minutes" not in session.model_dump()
 
 
 @pytest.mark.asyncio
@@ -363,11 +371,11 @@ async def test_queues_restore_estimates_after_a_fresh_successful_observation(
     assert session.status == "active"
     assert session.stale is False
     assert session.error_code is None
-    assert session.prediction is not None
-    assert session.trajectory_minutes == 4
+    assert session.prediction is None
+    assert "trajectory_minutes" not in session.model_dump()
 
 
-def test_active_trajectory_requires_a_decreasing_observation() -> None:
+def test_queue_model_does_not_expose_trajectory() -> None:
     now = datetime(2026, 9, 15, 3, tzinfo=UTC)
     fields = {
         "session_id": 1,
@@ -401,5 +409,5 @@ def test_active_trajectory_requires_a_decreasing_observation() -> None:
         ],
     )
 
-    assert flat.trajectory_minutes is None
-    assert decreasing.trajectory_minutes == 20
+    assert "trajectory_minutes" not in flat.model_dump()
+    assert "trajectory_minutes" not in decreasing.model_dump()

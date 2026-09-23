@@ -23,6 +23,19 @@ def test_initialize_creates_private_database_and_schema(tmp_path: Path) -> None:
     ) == len(MIGRATIONS)
 
 
+@pytest.mark.parametrize("mode", [0o1777, 0o755, 0o770])
+def test_initialize_preserves_existing_parent_permissions(tmp_path: Path, mode: int) -> None:
+    parent = tmp_path / "shared"
+    parent.mkdir()
+    parent.chmod(mode)
+    database = Database(parent / "matoca.db")
+
+    for _ in range(2):
+        database.initialize()
+        assert stat.S_IMODE(parent.stat().st_mode) == mode
+        assert stat.S_IMODE(database.path.stat().st_mode) == 0o600
+
+
 def test_initialize_is_idempotent(tmp_path: Path) -> None:
     database = Database(tmp_path / "data" / "matoca.db")
     database.initialize()
@@ -33,6 +46,30 @@ def test_initialize_is_idempotent(tmp_path: Path) -> None:
     )
 
     assert journal_mode == "wal"
+
+
+def test_queue_estimate_upgrade_preserves_active_ticket(tmp_path: Path) -> None:
+    path = tmp_path / "matoca.db"
+    with sqlite3.connect(path) as connection:
+        for migration in MIGRATIONS[:10]:
+            migration(connection)
+        connection.execute("PRAGMA user_version = 10")
+        connection.execute("""INSERT INTO queue_sessions
+            (session_id, merchant_key, waiting_id, source, first_observed_at, status)
+            VALUES (1, 'sawayaka', 123, 'adopted', '2026-09-21T04:00:00+00:00', 'active')""")
+        connection.execute(
+            "INSERT INTO queue_session_observations VALUES (1, '2026-09-21T04:00:00+00:00', 20)"
+        )
+    database = Database(path)
+    database.initialize()
+    assert database.read(
+        lambda c: c.execute(
+            "SELECT count, official_minutes, official_is_more FROM queue_session_observations"
+        ).fetchone()
+    ) == (20, None, None)
+    assert database.read(lambda c: c.execute("SELECT status FROM queue_sessions").fetchone()) == (
+        "active",
+    )
 
 
 def test_initialize_hardens_database_after_failed_migration(tmp_path: Path) -> None:

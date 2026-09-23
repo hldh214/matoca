@@ -22,8 +22,9 @@ TOKYO = ZoneInfo("Asia/Tokyo")
 
 
 class ShopRepository:
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, *, record_history: bool = True) -> None:
         self._database = database
+        self._record_history = record_history
 
     def save_cycle(self, cycle: CollectionWrite) -> None:
         self._database.write(lambda connection: self._save_cycle(connection, cycle))
@@ -74,6 +75,8 @@ class ShopRepository:
         )
 
     def rollup_and_prune(self, now: datetime) -> RetentionResult:
+        if not self._record_history:
+            return RetentionResult(raw_deleted=0)
         return self._database.write(lambda connection: self._rollup_and_prune(connection, now))
 
     def poll_window(self, merchant_key: str, now: datetime) -> PollWindow | None:
@@ -142,41 +145,52 @@ class ShopRepository:
                     *([refresh_static] * 7),
                 ),
             )
-            connection.execute(
-                """
-                INSERT INTO shop_observations (
-                    merchant_key, shop_id, observed_minute, current_waiting, waiting_minutes,
-                    waiting_is_more, is_open, is_issuable, is_holiday, is_suspended, list_fresh,
-                    detail_fresh, error_code
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (merchant_key, shop_id, observed_minute) DO UPDATE SET
-                    current_waiting = excluded.current_waiting,
-                    waiting_minutes = excluded.waiting_minutes,
-                    waiting_is_more = excluded.waiting_is_more,
-                    is_open = excluded.is_open,
-                    is_issuable = excluded.is_issuable,
-                    is_holiday = excluded.is_holiday,
-                    is_suspended = excluded.is_suspended,
-                    list_fresh = excluded.list_fresh,
-                    detail_fresh = excluded.detail_fresh,
-                    error_code = excluded.error_code
-                """,
-                (
-                    cycle.merchant_key,
-                    shop.id,
-                    _serialize_datetime(observed_minute),
-                    observation.current_waiting,
-                    observation.waiting_minutes,
-                    int(observation.waiting_is_more),
-                    _sqlite_bool(observation.is_open),
-                    _sqlite_bool(observation.is_issuable),
-                    int(observation.is_holiday),
-                    int(observation.is_suspended),
-                    int(observation.list_fresh),
-                    int(observation.detail_fresh),
-                    observation.error_code,
-                ),
-            )
+            tables = ["shop_current_state"]
+            if self._record_history:
+                tables.append("shop_observations")
+            for table in tables:
+                conflict = (
+                    "merchant_key, shop_id, observed_minute"
+                    if table == "shop_observations"
+                    else "merchant_key, shop_id"
+                )
+                connection.execute(
+                    f"""
+                    INSERT INTO {table} (
+                        merchant_key, shop_id, observed_minute, current_waiting, waiting_minutes,
+                        waiting_is_more, is_open, is_issuable, is_holiday, is_suspended, list_fresh,
+                        detail_fresh, error_code
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT ({conflict}) DO UPDATE SET
+                        observed_minute = excluded.observed_minute,
+                        current_waiting = excluded.current_waiting,
+                        waiting_minutes = excluded.waiting_minutes,
+                        waiting_is_more = excluded.waiting_is_more,
+                        is_open = excluded.is_open,
+                        is_issuable = excluded.is_issuable,
+                        is_holiday = excluded.is_holiday,
+                        is_suspended = excluded.is_suspended,
+                        list_fresh = excluded.list_fresh,
+                        detail_fresh = excluded.detail_fresh,
+                        error_code = excluded.error_code
+                    WHERE excluded.observed_minute >= {table}.observed_minute
+                    """,
+                    (
+                        cycle.merchant_key,
+                        shop.id,
+                        _serialize_datetime(observed_minute),
+                        observation.current_waiting,
+                        observation.waiting_minutes,
+                        int(observation.waiting_is_more),
+                        _sqlite_bool(observation.is_open),
+                        _sqlite_bool(observation.is_issuable),
+                        int(observation.is_holiday),
+                        int(observation.is_suspended),
+                        int(observation.list_fresh),
+                        int(observation.detail_fresh),
+                        observation.error_code,
+                    ),
+                )
 
         if is_latest:
             if cycle.catalog_complete:
@@ -208,19 +222,20 @@ class ShopRepository:
             )
 
     def _latest(self, connection: sqlite3.Connection, merchant_key: str) -> list[StoredShop]:
+        table = "shop_observations" if self._record_history else "shop_current_state"
         rows = connection.execute(
-            """
+            f"""
             SELECT s.*, o.observed_minute, o.current_waiting, o.waiting_minutes, o.waiting_is_more,
                    o.is_open, o.is_issuable, o.is_holiday, o.is_suspended, o.list_fresh,
                    o.detail_fresh, o.error_code
             FROM shops AS s
             JOIN catalog_members AS c
               ON c.merchant_key = s.merchant_key AND c.shop_id = s.shop_id
-            LEFT JOIN shop_observations AS o
+            LEFT JOIN {table} AS o
               ON o.merchant_key = s.merchant_key AND o.shop_id = s.shop_id
              AND o.observed_minute = (
                 SELECT MAX(latest.observed_minute)
-                FROM shop_observations AS latest
+                FROM {table} AS latest
                 WHERE latest.merchant_key = s.merchant_key AND latest.shop_id = s.shop_id
              )
             WHERE s.merchant_key = ?

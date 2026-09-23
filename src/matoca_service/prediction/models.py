@@ -24,3 +24,4 @@ class Prediction(BaseModel):
     confidence: PredictionConfidence
     effective_samples: float = Field(ge=0)
     level: PredictionLevel
+    target: Literal["calling", "pre_call"] = "calling"

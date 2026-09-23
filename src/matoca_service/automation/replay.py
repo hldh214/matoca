@@ -84,7 +84,7 @@ def replay(database: Database, request: ReplayRequest, *, as_of: datetime) -> Re
         observed = datetime.fromisoformat(row[0])
         fresh = bool(row[3] and row[4] and row[9] is None)
         prediction = (
-            predictor.predict(request.merchant_key, request.shop_id, row[1], observed)
+            predictor.predict_pre_call(request.merchant_key, request.shop_id, row[1], observed)
             if fresh and row[1] is not None and not row[2]
             else None
         )

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict, Field
 
 from matoca_service.prediction.models import Prediction
 
@@ -33,6 +33,9 @@ class QueueRead(BaseModel):
     shop_id: int | None = None
     number: int | None = None
     count: int | None = None
+    status: str | int | None = None
+    official_minutes: int | None = None
+    official_is_more: bool | None = None
     adult_count: int | None = None
     child_count: int | None = None
 
@@ -42,6 +45,9 @@ class QueueObservation(BaseModel):
 
     observed_at: datetime
     count: int | None
+    official_minutes: int | None = None
+    official_is_more: bool | None = None
+    raw_status: int | str | None = None
 
 
 class QueueIntentSummary(BaseModel):
@@ -60,6 +66,14 @@ class QueueIntentSummary(BaseModel):
     source: Literal["manual", "automation"]
     status: IntentStatus
     error_code: str | None = None
+
+
+class QueueMilestone(BaseModel):
+    kind: Literal["pre_call", "calling", "cancelled"]
+    occurred_at: datetime
+    recorded_at: datetime
+    source: Literal["api_observation", "line_notification_manual"]
+    precision_seconds: int
 
 
 class QueueSession(BaseModel):
@@ -87,16 +101,4 @@ class QueueSession(BaseModel):
     error_code: str | None = None
     prediction: Prediction | None = None
     observations: list[QueueObservation]
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def trajectory_minutes(self) -> int | None:
-        valid = [(item, item.count) for item in self.observations if item.count is not None]
-        if self.stale or self.status != "active" or len(valid) < 2:
-            return None
-        (first, first_count), (last, last_count) = valid[0], valid[-1]
-        decrease = first_count - last_count
-        elapsed = (last.observed_at - first.observed_at).total_seconds() / 60
-        if decrease <= 0 or elapsed <= 0 or last_count <= 0:
-            return None
-        return round(last_count * elapsed / decrease)
+    milestones: list[QueueMilestone] = Field(default_factory=list)

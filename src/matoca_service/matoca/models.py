@@ -59,12 +59,13 @@ class Shop(MatocaModel):
 
 class Waiting(MatocaModel):
     id: int
+    estimate_time: WaitingEstimate | None = None
     count: int | None = None
     number: int | None = None
     shop_id: int | str | None = None
     adult_count: int | None = None
     child_count: int | None = None
-    status: str | None = None
+    status: str | int | None = None
 
 
 class CreateWaitingRequest(BaseModel):

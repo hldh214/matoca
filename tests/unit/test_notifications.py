@@ -107,7 +107,7 @@ def test_business_rollback_also_rolls_back_outbox(tmp_path: Path) -> None:
     assert repo.history() == []
 
 
-def test_earlier_alert_uses_absolute_trajectory_not_elapsed_time(tmp_path: Path) -> None:
+def test_decreasing_groups_never_emit_prediction_alerts(tmp_path: Path) -> None:
     db = database(tmp_path)
     queues = QueueRepository(db)
     repo = NotificationRepository(db)
@@ -122,8 +122,7 @@ def test_earlier_alert_uses_absolute_trajectory_not_elapsed_time(tmp_path: Path)
             )
         )
         early = [x for x in repo.history() if x.kind == "predicted_earlier"]
-        assert len(early) == (1 if minute == 15 else 0)
-    assert "待ち組数の減少" in early[0].body
+        assert early == []
 
 
 def test_vapid_generation_preserves_latest_line_state_and_is_stable(tmp_path: Path) -> None:

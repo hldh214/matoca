@@ -442,7 +442,7 @@ class AutomationRunner:
                 and not estimate.is_more
                 and estimate.minutes >= 0
             ):
-                prediction = await self.service.predict(
+                prediction = await self.service.predict_pre_call(
                     task.merchant_key, task.shop_id, estimate.minutes, now
                 )
             evidence = evaluate_timing(

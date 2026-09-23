@@ -170,9 +170,6 @@ def test_console_geometry_across_supported_viewports(
     first_action = first_row.locator(".join-button")
     for content in first_row.locator(":scope > :not(.shop-actions)").all():
         assert_no_overlap(box(content), box(first_action))
-    assert_no_overlap(box(first_row.locator(".automation-button")), box(first_action))
-
-    empty_queue_height = box(queue_band).height
 
     safe_page.get_by_role("button", name="設定", exact=True).click()
     settings_dialog = safe_page.get_by_role("dialog", name="設定")
@@ -194,7 +191,8 @@ def test_console_geometry_across_supported_viewports(
 
     expect(join_dialog).to_be_hidden()
     expect(queue_band.get_by_text("101", exact=True)).to_be_visible()
-    assert box(queue_band).height == empty_queue_height
+    assert_inside_viewport(queue_band, safe_page)
+    assert_no_overlap(box(queue_band), box(toolbar))
     assert_visible_buttons_inside_viewport(safe_page)
     assert_no_horizontal_overflow(safe_page)
 

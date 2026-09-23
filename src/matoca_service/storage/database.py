@@ -16,8 +16,9 @@ class Database:
         self._wal_initialized = False
 
     def initialize(self) -> None:
+        # Existing parents may be shared directories (including /tmp). Only set
+        # permissions when creating our directory, never chmod an existing one.
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.path.parent, 0o700)
         with self._connect() as connection:
             try:
                 migrate(connection)

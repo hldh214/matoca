@@ -47,30 +47,17 @@ export class MatocaApi {
   console() { return this.request(`${this.base}/console`); }
   async currentWaiting() {
     const items = await this.request("/api/queues");
-    return items.filter((item) => ["pending", "unresolved"].includes(item.status)
-      || encodeURIComponent(item.merchant_key) === this.merchantKey);
+    return items;
   }
   shopDetail(id) { return this.request(`/api/shops/${encodeURIComponent(id)}?merchant=${this.merchantKey}`); }
   createWaiting(body) { return this.request(`${this.base}/waiting`, "POST", body); }
-  cancelWaiting(id) { return this.request(`${this.base}/waiting/${encodeURIComponent(id)}`, "DELETE"); }
-  automationTasks() { return this.request("/api/automation/tasks"); }
-  automationHistory(id) { return this.request(`/api/automation/tasks/${encodeURIComponent(id)}/history`); }
-  automationEditContext(id) { return this.request(`/api/automation/tasks/${encodeURIComponent(id)}/edit`); }
-  editAutomation(id, body) { return this.request(`/api/automation/tasks/${encodeURIComponent(id)}`, "PUT", body); }
-  replay(shopId, day, arrival, early, error) {
-    const params = new URLSearchParams({merchant_key: decodeURIComponent(this.merchantKey), shop_id: shopId,
-      day, arrival_at: arrival, early_tolerance_minutes: early, model_error_minutes: error});
-    return this.request(`/api/automation/replay?${params}`);
+  cancelWaiting(id, merchantKey = decodeURIComponent(this.merchantKey)) {
+    return this.request(`/api/merchants/${encodeURIComponent(merchantKey)}/waiting/${encodeURIComponent(id)}`, "DELETE");
   }
-  createAutomation(body) { return this.request("/api/automation/tasks", "POST", {...body, merchant_key: decodeURIComponent(this.merchantKey)}); }
-  cancelAutomation(id) { return this.request(`/api/automation/tasks/${encodeURIComponent(id)}`, "DELETE"); }
-  resolveAutomation(id) { return this.request(`/api/automation/tasks/${encodeURIComponent(id)}/resolve`, "POST", {confirm_no_queue: true}); }
   resolveManualIntent(id) { return this.request(`/api/queues/intents/${encodeURIComponent(id)}/resolve`, "POST", {confirm_no_queue: true}); }
   preferences() { return this.request("/api/preferences"); }
   savePreferences(body) { return this.request("/api/preferences", "PUT", body); }
   refresh() { return this.request(`${this.base}/refresh`, "POST"); }
   favorites() { return this.request("/api/favorites"); }
   setFavorite(id, enabled) { return this.request(`${this.base}/shops/${encodeURIComponent(id)}/favorite`, "PUT", {enabled}); }
-  shopHistory(id, day) { return this.request(`${this.base}/shops/${encodeURIComponent(id)}/history?day=${encodeURIComponent(day)}`); }
-  shopTrend(id) { return this.request(`${this.base}/shops/${encodeURIComponent(id)}/trend`); }
 }

@@ -3,21 +3,12 @@ export function officialEstimate(minutes, isMore = false) {
   return isMore ? `${minutes}分以上` : `約${minutes}分`;
 }
 
-function predictionEstimate(prediction) {
-  if (!prediction) return "予測なし";
-  const confidence = {low: "信頼度 低", medium: "信頼度 中", high: "信頼度 高"}[prediction.confidence];
-  const samples = Number(prediction.effective_samples).toFixed(1);
-  return `予測 ${prediction.fast_minutes}〜${prediction.typical_minutes}分・${confidence}・実効${samples}件`;
-}
-
 export class ShopList {
-  constructor(document, onJoin, onFavorite, onHistory, onAutomation) {
+  constructor(document, onJoin, onFavorite) {
     this.document = document;
     this.target = document.querySelector("#shop-list");
     this.onJoin = onJoin;
     this.onFavorite = onFavorite;
-    this.onHistory = onHistory;
-    this.onAutomation = onAutomation;
   }
 
   node(tag, className, text) {
@@ -35,7 +26,7 @@ export class ShopList {
     const value = (shop) => sort === "waiting" ? shop.current_waiting
       : sort === "official" ? shop.official_waiting_minutes : null;
     const shops = data.shops.filter((shop) =>
-      (filter === "all" || shop.can_join === true)
+      (filter === "all" || (filter === "favorites" ? favorites.has(shop.id) : shop.can_join === true))
       && [shop.name, shop.sub_name, shop.address].join(" ").toLocaleLowerCase("ja-JP").includes(search))
       .sort((left, right) => {
         const favoriteOrder = Number(favorites.has(right.id)) - Number(favorites.has(left.id));
@@ -72,8 +63,7 @@ export class ShopList {
       waiting.append(this.node("strong", "", shop.current_waiting ?? "—"), "組");
       const estimate = this.node("span", "metric");
       estimate.append(this.node("span", "metric-label", "公式"), this.node("strong", "", officialEstimate(
-        shop.official_waiting_minutes, shop.official_waiting_is_more)),
-        this.node("small", "prediction-value", predictionEstimate(shop.prediction)));
+        shop.official_waiting_minutes, shop.official_waiting_is_more)));
       const action = this.node("button", "join-button", !queueKnown ? "順番待ちを確認中"
         : hasQueue ? "順番待ち受付中" : shop.can_join === true ? "今すぐ受付" : "受付できません");
       action.type = "button";
@@ -87,16 +77,9 @@ export class ShopList {
       favorite.disabled = pendingFavorites.has(shop.id);
       favorite.setAttribute("aria-label", favorites.has(shop.id) ? "お気に入りから削除" : "お気に入りに追加");
       favorite.addEventListener("click", () => this.onFavorite(shop));
-      const history = this.node("button", "history-button", "履歴を見る");
-      history.type = "button";
-      history.addEventListener("click", () => this.onHistory(shop));
-      tools.append(favorite, history);
+      tools.append(favorite);
       const actions = this.node("div", "shop-actions");
-      const automatic = this.node("button", "automation-button", "自動受付を設定");
-      automatic.type = "button";
-      automatic.disabled = shop.stale;
-      automatic.addEventListener("click", () => this.onAutomation(shop));
-      actions.append(action, automatic);
+      actions.append(action);
       row.append(identity, status, waiting, estimate, tools, actions);
       this.target.append(row);
     }

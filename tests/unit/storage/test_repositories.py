@@ -58,6 +58,29 @@ def observation_shop(
     )
 
 
+def test_current_only_updates_preserve_history(database: Database) -> None:
+    at = datetime(2026, 9, 22, 8, tzinfo=UTC)
+    old = ShopRepository(database)
+    old.save_cycle(
+        CollectionWrite(
+            merchant_key="sawayaka",
+            observed_at=at,
+            shops=[observation_shop(waiting_minutes=20, detail_fresh=True)],
+        )
+    )
+    current = ShopRepository(database, record_history=False)
+    for i in range(1, 4):
+        current.save_cycle(
+            CollectionWrite(
+                merchant_key="sawayaka",
+                observed_at=at + timedelta(minutes=i),
+                shops=[observation_shop(waiting_minutes=10 - i, detail_fresh=True)],
+            )
+        )
+    assert len(old.observations("sawayaka", 3272, limit=100)) == 1
+    assert current.latest("sawayaka")[0].observation.waiting_minutes == 7
+
+
 def test_save_cycle_replaces_same_minute_without_copying_stale_detail(database: Database) -> None:
     repository = ShopRepository(database)
     observed_at = datetime(2026, 9, 10, 8, 1, 40, tzinfo=UTC)

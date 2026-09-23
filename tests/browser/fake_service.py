@@ -390,7 +390,14 @@ class BrowserFakeService:
                     effective_samples=7.5,
                     level="shop_daypart",
                 ),
-                observations=[QueueObservation(observed_at=FIXED_NOW, count=waiting.count)],
+                observations=[
+                    QueueObservation(
+                        observed_at=FIXED_NOW,
+                        count=waiting.count,
+                        official_minutes=25,
+                        raw_status=2,
+                    )
+                ],
             )
             for merchant_key, items in self._waiting.items()
             for waiting in items

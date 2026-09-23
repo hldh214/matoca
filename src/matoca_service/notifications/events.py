@@ -1,10 +1,10 @@
 import json
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 from urllib.parse import quote
 
 from matoca_service.config import MerchantRegistry
-from matoca_service.notifications.repository import NotificationRepository, timestamp
+from matoca_service.notifications.repository import NotificationRepository
 
 MERCHANT_NAMES = {
     key: value.name for key, value in MerchantRegistry.load_builtin().merchants.items()
@@ -78,50 +78,3 @@ def queue_observation(
                 url,
                 now,
             )
-    observations = connection.execute(
-        """SELECT observed_minute, count FROM queue_session_observations
-        WHERE session_id=? AND observed_minute<=? AND count IS NOT NULL
-        ORDER BY observed_minute DESC LIMIT 2""",
-        (session_id, timestamp(now)),
-    ).fetchall()
-    if len(observations) != 2 or count == 0:
-        return
-    latest, previous = observations
-    elapsed = (
-        datetime.fromisoformat(latest[0]) - datetime.fromisoformat(previous[0])
-    ).total_seconds()
-    drop = previous[1] - latest[1]
-    if elapsed > 600:
-        connection.execute(
-            "DELETE FROM queue_notification_predictions WHERE session_id=?", (session_id,)
-        )
-        return
-    if elapsed <= 0 or drop <= 0:
-        return
-    target = datetime.fromisoformat(latest[0]) + timedelta(seconds=elapsed * count / drop)
-    baseline = connection.execute(
-        "SELECT target_at, observed_at FROM queue_notification_predictions WHERE session_id=?",
-        (session_id,),
-    ).fetchone()
-    if baseline and timestamp(now) <= baseline[1]:
-        return
-    earlier = baseline and datetime.fromisoformat(baseline[0]) - target >= timedelta(minutes=10)
-    if earlier:
-        NotificationRepository.publish(
-            connection,
-            f"queue:{session_id}:earlier:{timestamp(target)}",
-            "predicted_earlier",
-            "呼び出し予測が早まりました",
-            prefix + "待ち組数の減少から見た呼び出し予測が10分以上早まりました。"
-            "目安として確認してください",
-            url,
-            now,
-        )
-    # Keep the last alerted baseline so multiple smaller advances accumulate.
-    if not baseline or earlier or target > datetime.fromisoformat(baseline[0]):
-        connection.execute(
-            """INSERT INTO queue_notification_predictions VALUES (?, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET target_at=excluded.target_at,
-            observed_at=excluded.observed_at""",
-            (session_id, timestamp(target), timestamp(now)),
-        )

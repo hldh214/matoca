@@ -30,6 +30,7 @@ def test_cold_start_and_null_official_estimate() -> None:
         "confidence": "low",
         "effective_samples": 0.0,
         "level": "cold_start",
+        "target": "calling",
     }
 
 
