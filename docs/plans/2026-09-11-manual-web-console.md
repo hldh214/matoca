@@ -439,5 +439,5 @@ git commit -m "docs: finish manual queue console"
 
 Restart only through `supervisorctl restart matoca`. Confirm `supervisorctl status matoca`
 is RUNNING and the local home page returns HTTP 200. Provide
-`http://192.168.10.103:48173/` to the user for visual verification at 1440x900 and 390x844.
+the deployment's configured URL to the user for visual verification at 1440x900 and 390x844.
 Do not submit or cancel any queue while checking the live UI.

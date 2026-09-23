@@ -62,7 +62,7 @@ def run_diagnostics_probe(
         ("http://127.0.0.1:43127/", True),
         ("http://127.0.0.1:43127/static/dashboard.css?version=1", True),
         ("http://example.test:43127/", False),
-        ("http://192.168.10.103:48173/", False),
+        ("http://192.0.2.1:43127/", False),
         ("http://127.0.0.1:43128/", False),
         ("https://127.0.0.1:43127/", False),
     ],
