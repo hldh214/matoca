@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from matoca_service.automation.decisions import TimingDecision
 from matoca_service.matoca.models import Shop
 
 TaskState = Literal[
@@ -55,6 +56,8 @@ class AutomationValues(BaseModel):
 
 class AutomationRequest(AutomationValues):
     merchant_key: str
+    form_revision: str | None = Field(default=None, min_length=64, max_length=64, exclude=True)
+    timing_policy: Literal["official", "legacy"] = "official"
     mode: Literal["live", "simulation"] = Field(default="live", frozen=True)
     shop_id: int = Field(ge=1)
 
@@ -64,7 +67,22 @@ class AutomationEditRequest(AutomationValues):
     form_revision: str = Field(min_length=64, max_length=64)
 
 
+class OfficialAutomationRequest(AutomationRequest):
+    form_revision: str = Field(min_length=64, max_length=64, exclude=True)
+    timing_policy: Literal["official"] = "official"
+    mode: Literal["live"] = "live"
+    early_tolerance_minutes: Literal[0] = 0
+    model_error_minutes: Literal[0] = 0
+
+
+class OfficialAutomationEditRequest(AutomationEditRequest):
+    early_tolerance_minutes: Literal[0] = 0
+    model_error_minutes: Literal[0] = 0
+
+
 class AutomationTask(AutomationRequest):
+    # Payloads written before official-only scheduling must never resume automatically.
+    timing_policy: Literal["official", "legacy"] = "legacy"
     id: str
     shop_name: str
     created_at: datetime
@@ -75,6 +93,7 @@ class AutomationTask(AutomationRequest):
     last_decision: str = "自動受付を有効にしました"
     evaluated_at: datetime | None = None
     next_evaluation_at: datetime | None = None
+    last_check: TimingDecision | None = None
 
 
 class AutomationEditContext(BaseModel):

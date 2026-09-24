@@ -1,5 +1,9 @@
 # Core queue console simplification
 
+> Historical change record. Official-estimate automatic reception was subsequently
+> restored, followed by raw shop-history recording and charts; see the current README.
+> Learned prediction and prediction-derived trend/replay UI remain retired.
+
 Prediction and arrival-time automatic reception have been retired from the running
 application. The Japanese console retains merchant selection, available-shop
 filtering, search, favorites, official waiting groups/time, immediate reception,

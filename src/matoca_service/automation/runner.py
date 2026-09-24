@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
-from matoca_service.automation.decisions import TimingDecision, evaluate_timing
+from matoca_service.automation.decisions import TimingDecision, evaluate_official_timing
 from matoca_service.automation.models import (
     AutomationEditContext,
     AutomationEditRequest,
@@ -211,6 +211,10 @@ class AutomationRunner:
 
     async def create(self, request: AutomationRequest) -> AutomationTask:
         shop = await self.service.shop_detail(request.merchant_key, request.shop_id)
+        if request.form_revision is not None and request.form_revision != form_revision(shop):
+            raise TaskConflictError(
+                "受付の質問が変わりました。開き直して選択内容を確認してください"
+            )
         self._validate_request(request, shop)
         task = await run_storage(
             self.repository.create,
@@ -225,7 +229,8 @@ class AutomationRunner:
     @staticmethod
     def _editable(task: AutomationTask, expected_version: int | None = None) -> None:
         if (
-            task.state not in {"scheduled", "monitoring", "needs_attention"}
+            task.timing_policy != "official"
+            or task.state not in {"scheduled", "monitoring", "needs_attention"}
             or task.intent_id is not None
             or (expected_version is not None and task.version != expected_version)
         ):
@@ -306,7 +311,7 @@ class AutomationRunner:
     async def run_once(self) -> None:
         tasks = await run_storage(self.repository.list_tasks)
         for task in reversed(tasks):
-            if task.state in {
+            if task.timing_policy == "official" and task.state in {
                 "scheduled",
                 "monitoring",
                 "submitting",
@@ -334,15 +339,12 @@ class AutomationRunner:
     async def _record_blocked(
         self, task: AutomationTask, reason_code: str, reason: str, checked_at: datetime
     ) -> None:
-        evidence = evaluate_timing(
+        evidence = evaluate_official_timing(
             evaluated_at=self.now(),
             checked_at=checked_at,
             arrival_at=task.arrival_at,
             official_minutes=None,
             official_is_more=False,
-            prediction=None,
-            early_tolerance_minutes=task.early_tolerance_minutes,
-            model_error_minutes=task.model_error_minutes,
             available=False,
             observation_fresh=reason_code not in {"read_error", "expired"},
         ).model_copy(update={"reason_code": reason_code, "reason": reason, "would_submit": False})
@@ -403,13 +405,13 @@ class AutomationRunner:
         if task.intent_id:
             await self._recover(task)
             return
-        if task.state not in {"scheduled", "monitoring"}:
-            return
         if self.now() > task.arrival_at + timedelta(minutes=2):
             await self._record_blocked(task, "expired", "到着予定から2分を過ぎました", self.now())
             await self._record(
                 task, "expired", "到着予定から2分を過ぎたため、自動受付を終了しました"
             )
+            return
+        if task.state not in {"scheduled", "monitoring"}:
             return
         submission = QueueSubmission.model_validate(
             task.model_dump(
@@ -429,31 +431,17 @@ class AutomationRunner:
 
         async def check(shop: Shop) -> None:
             nonlocal evidence
-            now = self.now()
             if not form_matches(task, shop):
                 raise DeferredDecision(
                     "needs_attention", "受付フォームが変更されました。選択内容の確認が必要です"
                 )
             estimate = shop.waiting_time
-            prediction = None
-            if (
-                now < task.arrival_at
-                and estimate is not None
-                and not estimate.is_more
-                and estimate.minutes >= 0
-            ):
-                prediction = await self.service.predict_pre_call(
-                    task.merchant_key, task.shop_id, estimate.minutes, now
-                )
-            evidence = evaluate_timing(
+            evidence = evaluate_official_timing(
                 evaluated_at=self.now(),
                 checked_at=checks_started,
                 arrival_at=task.arrival_at,
                 official_minutes=estimate.minutes if estimate else None,
                 official_is_more=estimate.is_more if estimate else False,
-                prediction=prediction,
-                early_tolerance_minutes=task.early_tolerance_minutes,
-                model_error_minutes=task.model_error_minutes,
             )
             await run_storage(self.repository.record_decision, task.id, evidence)
             if not evidence.would_submit:

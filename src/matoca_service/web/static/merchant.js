@@ -4,14 +4,20 @@ import {ShopList} from "./shop-list.js";
 import {QueueStatus} from "./queue-status.js";
 import {JoinForm} from "./join-form.js";
 import {PreferencesDialog} from "./preferences.js";
+import {AutomationPanel} from "./automation.js";
+import {ShopHistoryDialog} from "./shop-history.js";
 
 const api = new MatocaApi(document.body.dataset.merchantKey);
 const preferences = new PreferencesDialog(document, api);
 const queue = new QueueStatus(document, api, render, reload);
 const join = new JoinForm(document, api, preferences, queue, reload);
+const automation = new AutomationPanel(document, api, (task) => join.open(
+  {id: task.shop_id, name: task.shop_name}, "automatic", task));
 const favorites = new Set();
 const pendingFavorites = new Set();
-const list = new ShopList(document, (shop) => join.open(shop), toggleFavorite);
+const history = new ShopHistoryDialog(document, api);
+const list = new ShopList(document, (shop) => join.open(shop), toggleFavorite,
+  (shop) => join.open(shop, "automatic"), (shop) => history.open(shop));
 const search = document.querySelector("#shop-search");
 const sort = document.querySelector("#shop-sort");
 const updated = document.querySelector("#updated-at");
@@ -69,7 +75,7 @@ async function loadConsole() {
   }
 }
 
-function reload() { return Promise.all([loadConsole(), queue.refresh()]); }
+function reload() { return Promise.all([loadConsole(), queue.refresh(), automation.refresh(true)]); }
 
 document.querySelectorAll(".dialog-close").forEach((button) => {
   button.addEventListener("click", () => button.closest("dialog").close());

@@ -2,10 +2,38 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from matoca_service.automation.decisions import evaluate_timing
+from matoca_service.automation.decisions import evaluate_official_timing, evaluate_timing
 from matoca_service.prediction.models import Prediction
 
 ARRIVAL = datetime(2026, 9, 19, 9, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "offset,age,minutes,is_more,expected",
+    [
+        (-1801, 0, 30, False, "too_early"),
+        (-1800, 0, 30, False, "timing_ready"),
+        (-60, 0, None, False, "estimate_unavailable"),
+        (-60, 0, 90, True, "estimate_unavailable"),
+        (-60, 61, 30, False, "stale"),
+        (-60, -1, 30, False, "stale"),
+        (0, 0, None, False, "arrival"),
+        (120, 0, 90, True, "arrival"),
+        (121, 0, 30, False, "expired"),
+    ],
+)
+def test_official_boundaries(offset, age, minutes, is_more, expected):
+    now = ARRIVAL + timedelta(seconds=offset)
+    decision = evaluate_official_timing(
+        evaluated_at=now,
+        checked_at=now - timedelta(seconds=age),
+        arrival_at=ARRIVAL,
+        official_minutes=minutes,
+        official_is_more=is_more,
+    )
+    assert decision.reason_code == expected
+    assert decision.would_submit is (expected in {"arrival", "timing_ready"})
+    assert decision.prediction is None
 
 
 @pytest.mark.parametrize(

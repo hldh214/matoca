@@ -62,8 +62,10 @@ async def test_versioned_assets_include_module_dependencies_and_cache_policy() -
 def test_removed_prediction_routes_are_not_exposed() -> None:
     app = create_app(service=FakeDashboardService())
     paths = {route.path for route in app.routes if isinstance(route, APIRoute)}
-    assert not any(path.startswith("/api/automation") for path in paths)
-    assert not any(path.endswith(("/trend", "/history")) and "/shops/" in path for path in paths)
+    assert "/api/automation" in paths
+    assert "/api/automation/replay" not in paths
+    assert not any(path.endswith("/trend") and "/shops/" in path for path in paths)
+    assert "/api/merchants/{merchant_key}/shops/{shop_id}/history" in paths
     assert "/api/merchants/{merchant_key}/waiting" in paths
     assert "/api/queues/intents/{intent_id}/resolve" in paths
 
@@ -300,7 +302,7 @@ async def test_merchant_page_renders_japanese_shop_console_shell() -> None:
     assert "公式目安" in response.text
     assert "設定" in response.text
     assert "地域別" not in response.text
-    assert response.text.count('class="dialog-close" type="button"') == 3
+    assert response.text.count('class="dialog-close" type="button"') == 4
 
 
 @pytest.mark.asyncio

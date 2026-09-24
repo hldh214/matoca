@@ -334,6 +334,42 @@ async def test_snapshot_does_not_read_prediction_history(
 
 
 @pytest.mark.asyncio
+async def test_live_collection_keeps_history_without_prediction(stored_service, monkeypatch):
+    service, _ = stored_service
+    at = datetime(2026, 9, 24, 1, tzinfo=UTC)
+    for minutes, groups in [(0, 10), (1, 7)]:
+        service._shops.save_cycle(
+            CollectionWrite(
+                merchant_key="sawayaka",
+                observed_at=at + timedelta(minutes=minutes),
+                shops=[
+                    ShopObservation(
+                        shop=Shop(
+                            id=999,
+                            name="テスト店",
+                            current_waiting=groups,
+                            waiting_time={"minutes": 25 - minutes * 5},
+                        ),
+                        list_fresh=True,
+                        detail_fresh=True,
+                    )
+                ],
+            )
+        )
+
+    async def forbidden(*args):
+        raise AssertionError("History must not calculate predictions")
+
+    monkeypatch.setattr(service, "predict_wait", forbidden, raising=False)
+    history = await service.shop_history("sawayaka", 999, at.date())
+    assert [row.current_waiting for row in history.observations] == [10, 7]
+    assert [row.official_waiting_minutes for row in history.observations] == [25, 20]
+    assert all(row.prediction is None for row in history.observations)
+    assert history.trend is None
+    assert "_predictions" not in service.__dict__
+
+
+@pytest.mark.asyncio
 async def test_cancelled_snapshot_request_does_not_release_shared_admission(
     stored_service: tuple[MatocaService, list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:

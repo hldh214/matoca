@@ -3,6 +3,10 @@ import {officialEstimate} from "./shop-list.js";
 
 const confirmationError = "選択内容の確認が必要です";
 
+function localInput(date) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
 export class JoinForm {
   constructor(document, api, preferences, queue, onMutation) {
     Object.assign(this, {document, api, preferences, queue, onMutation});
@@ -18,6 +22,21 @@ export class JoinForm {
     this.submitting = false;
     this.revision = 0;
     this.information = document.querySelector("#in-advance-information");
+    this.arrival = document.querySelector("#arrival-at");
+    this.addTen = document.querySelector("#arrival-add-ten");
+    this.subtractTen = document.querySelector("#arrival-subtract-ten");
+    for (const [button, minutes] of [[this.addTen, 10], [this.subtractTen, -10]]) {
+      button.addEventListener("click", () => {
+        const current = new Date(this.arrival.value);
+        if (this.loading || this.submitting || !Number.isFinite(current.getTime())) return;
+        this.arrival.value = localInput(new Date(current.getTime() + minutes * 60000));
+        this.sync();
+      });
+    }
+    this.mode = "manual";
+    this.editing = null;
+    this.formRevision = null;
+    this.arrival.addEventListener("input", () => this.sync());
     this.dialog.addEventListener("close", () => { this.revision++; });
     this.form.addEventListener("submit", (event) => { event.preventDefault(); return this.submit(); });
     this.form.querySelectorAll("[data-step]").forEach((button) => {
@@ -34,8 +53,19 @@ export class JoinForm {
     return Math.max(this.limits[`min_${type}`], Math.min(this.limits[`max_${type}`], count));
   }
 
-  async open(shop) {
-    if (this.submitting || shop.can_join !== true || !this.queue.canJoin) return;
+  async open(shop, mode = "manual", task = null) {
+    if (this.submitting || (mode === "manual" && (shop.can_join !== true || !this.queue.canJoin))
+      || !this.queue.known || this.queue.busy) return;
+    this.mode = mode;
+    this.editing = null;
+    this.formRevision = null;
+    this.document.querySelector("#arrival-settings").hidden = mode === "manual";
+    this.arrival.required = mode !== "manual";
+    const openedAt = Date.now();
+    this.arrival.value = localInput(new Date(openedAt + 3600000));
+    this.document.querySelector("#arrival-timezone").textContent = `時刻の地域：${this.api.timezone}`;
+    this.form.querySelector('[type="submit"]').textContent = mode === "manual"
+      ? "この内容で順番待ちを申し込む" : task ? "変更を保存" : "自動受付を開始";
     this.information.value = "";
     const revision = ++this.revision;
     this.selected = shop;
@@ -51,11 +81,27 @@ export class JoinForm {
     this.sync();
     try {
       // Capture defaults for this opening; later settings saves do not rewrite it.
-      const [detail, defaults] = await Promise.all([this.api.shopDetail(shop.id), this.preferences.defaults()]);
+      const [result, defaults] = await Promise.all([
+        task ? this.api.editTaskContext(task.id) : this.api.shopDetail(shop.id), this.preferences.defaults()]);
       if (revision !== this.revision || !this.dialog.open) return;
+      const detail = task ? result.shop : result;
+      this.formRevision = task ? result.form_revision : detail.form_revision;
       this.document.querySelector("#join-shop-name").textContent = detail.sub_name || detail.name;
       this.document.querySelector("#join-status").textContent = `${detail.current_waiting ?? "—"}組待ち・公式目安 ${officialEstimate(detail.waiting_time?.minutes, detail.waiting_time?.is_more)}`;
       this.configure(detail.forms, defaults);
+      if (!task && mode !== "manual") {
+        const minutes = detail.waiting_time?.minutes;
+        const delay = Number.isFinite(minutes) && minutes >= 0 ? Math.max(1, minutes) : 60;
+        this.arrival.value = localInput(new Date(openedAt + delay * 60000));
+      }
+      if (task) {
+        this.editing = result;
+        this.arrival.value = localInput(new Date(result.task.arrival_at));
+        this.information.value = result.task.in_advance_information || "";
+        this.counts = {adult: result.task.adult_count, child: result.task.child_count};
+        for (const {select, answer} of this.choices) select.value = String(result.task[`answer${answer}`]);
+        if (!result.selections_compatible) this.error.textContent = "受付内容が変更されています。最新の選択肢を確認してください";
+      }
     } catch (error) {
       if (revision !== this.revision) return;
       this.error.textContent = error.detail || "受付に必要な情報を取得できませんでした";
@@ -137,7 +183,9 @@ export class JoinForm {
   ready() {
     if (!this.limits || ["adult", "child"].some((type) =>
       this.counts[type] < this.limits[`min_${type}`] || this.counts[type] > this.limits[`max_${type}`])) return false;
-    return this.selected?.can_join === true && this.queue.canJoin;
+    return this.mode === "manual" ? this.queue.canJoin && this.selected?.can_join === true
+      : this.queue.known && !this.queue.busy && Number.isFinite(new Date(this.arrival.value).getTime())
+        && new Date(this.arrival.value) > new Date();
   }
 
   updateCatalog(shops) {
@@ -148,6 +196,9 @@ export class JoinForm {
 
   sync() {
     const busy = this.loading || this.submitting;
+    this.arrival.disabled = busy;
+    this.addTen.disabled = busy || !Number.isFinite(new Date(this.arrival.value).getTime());
+    this.subtractTen.disabled = this.addTen.disabled;
     this.form.setAttribute("aria-busy", String(busy));
     for (const type of ["adult", "child"]) this.document.querySelector(`#${type}-count`).textContent = this.counts[type];
     this.form.querySelectorAll("[data-step]").forEach((button) => {
@@ -164,7 +215,7 @@ export class JoinForm {
     if (!this.dialog.open || this.loading || this.submitting || this.blocked || !this.answersReady()
       || !this.ready()) return;
     this.submitting = true;
-    this.queue.beginMutation();
+    if (this.mode === "manual") this.queue.beginMutation();
     this.error.textContent = "";
     this.sync();
     const body = {shop_id: this.selected.id, adult_count: this.counts.adult, child_count: this.counts.child,
@@ -172,6 +223,17 @@ export class JoinForm {
     for (const {select, answer} of this.choices) body[`answer${answer}`] = Number(select.value);
     let succeeded = false;
     try {
+      if (this.mode !== "manual") {
+        const values = {...body, arrival_at: new Date(this.arrival.value).toISOString(), timezone: this.api.timezone, consent: true};
+        if (this.editing) {
+          delete values.shop_id;
+          await this.api.editTask(this.editing.task.id, {...values,
+            expected_version: this.editing.task.version, form_revision: this.editing.form_revision});
+        } else await this.api.createTask({...values, form_revision: this.formRevision});
+        this.dialog.close();
+        feedback(this.document, this.editing ? "自動受付の設定を更新しました" : "自動受付を開始しました");
+        succeeded = true;
+      } else {
       const item = await this.api.createWaiting(body);
       const observedAt = new Date().toISOString();
       const called = Number(item.status) === 4;
@@ -194,8 +256,9 @@ export class JoinForm {
       this.dialog.close();
       feedback(this.document, `受付が完了しました。受付番号 ${item.number ?? "—"}`);
       succeeded = true;
+      }
     } catch (error) {
-      this.queue.finishMutation();
+      if (this.mode === "manual") this.queue.finishMutation();
       this.error.textContent = error.detail || "順番待ちの申し込みに失敗しました";
     } finally {
       this.submitting = false;

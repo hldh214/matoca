@@ -3,11 +3,10 @@ import sqlite3
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import cached_property
 from pathlib import Path
 from typing import Literal, TypeVar
-from zoneinfo import ZoneInfo
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -262,7 +261,7 @@ class MatocaService:
         self.notifications = NotificationService(
             NotificationRepository(self._database), VapidKeys(self._store)
         )
-        self._shops = ShopRepository(self._database, record_history=False)
+        self._shops = ShopRepository(self._database, record_history=True)
         self._preferences = PreferenceRepository(self._database)
         self._analytics = AnalyticsRepository(self._database)
         self._queues = QueueRepository(self._database)
@@ -281,8 +280,7 @@ class MatocaService:
             list(self._registry.merchants), self, self._queues, reader_persists=True
         )
 
-    # Legacy offline analysis helpers are lazy. The web application does not start
-    # their coordinator or expose their endpoints.
+    # Historical prediction analysis remains offline; live automation uses official estimates.
     @cached_property
     def _predictions(self) -> PredictionService:
         return PredictionService(PredictionRepository(self._database))
@@ -391,22 +389,7 @@ class MatocaService:
 
     async def shop_history(self, merchant_key: str, shop_id: int, day: date) -> ShopHistory:
         self._merchant(merchant_key)
-        history = await run_storage(self._analytics.shop_history, merchant_key, shop_id, day)
-        observations = []
-        for observation in history.observations:
-            prediction = None
-            if observation.error_code is None and not observation.official_waiting_is_more:
-                prediction = await run_storage(
-                    self._predictions.predict,
-                    merchant_key,
-                    shop_id,
-                    observation.official_waiting_minutes,
-                    observation.observed_at,
-                )
-            observations.append(observation.model_copy(update={"prediction": prediction}))
-        as_of = min(datetime.now(UTC), datetime.combine(day, time.max, ZoneInfo("Asia/Tokyo")))
-        trend = await run_storage(self._analytics.trend_summary, merchant_key, shop_id, as_of)
-        return history.model_copy(update={"observations": observations, "trend": trend})
+        return await run_storage(self._analytics.shop_history, merchant_key, shop_id, day)
 
     async def shop_trend(self, merchant_key: str, shop_id: int) -> TrendSummary:
         self._merchant(merchant_key)
@@ -676,7 +659,11 @@ class MatocaService:
             return await self._create_waiting_unlocked(merchant_key, submission)
 
     async def automation_tasks(self) -> list[AutomationTask]:
-        return await run_storage(self._automation.list_tasks)
+        return [
+            task
+            for task in await run_storage(self._automation.list_tasks)
+            if task.timing_policy == "official" and task.mode == "live"
+        ]
 
     async def automation_history(self, task_id: str) -> list[TimingDecision]:
         return await run_storage(self._automation.list_decisions, task_id)

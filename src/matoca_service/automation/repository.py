@@ -73,7 +73,9 @@ class AutomationRepository:
     def list_tasks(self) -> list[AutomationTask]:
         def read(connection: sqlite3.Connection) -> list[AutomationTask]:
             rows = connection.execute("""SELECT payload, form_signature, state, version, intent_id,
-                last_decision, evaluated_at, next_evaluation_at
+                last_decision, evaluated_at, next_evaluation_at,
+                (SELECT payload FROM automation_decisions d WHERE d.task_id=automation_tasks.id
+                 ORDER BY d.id DESC LIMIT 1)
                 FROM automation_tasks ORDER BY rowid DESC""").fetchall()
             return [
                 AutomationTask.model_validate(
@@ -86,6 +88,7 @@ class AutomationRepository:
                         "last_decision": row[5],
                         "evaluated_at": row[6],
                         "next_evaluation_at": row[7],
+                        "last_check": json.loads(row[8]) if row[8] else None,
                     }
                 )
                 for row in rows

@@ -151,7 +151,7 @@ async def test_console_never_adds_predictions(
 
 
 @pytest.mark.asyncio
-async def test_history_enriches_only_exact_successful_observations(
+async def test_history_returns_observations_without_predictions(
     service: tuple[MatocaService, datetime],
 ) -> None:
     app, now = service
@@ -161,11 +161,12 @@ async def test_history_enriches_only_exact_successful_observations(
 
     history = await app.shop_history("sawayaka", 3272, date(2026, 9, 15))
 
-    assert [item.prediction is not None for item in history.observations] == [True, False, False]
+    assert [item.official_waiting_minutes for item in history.observations] == [30, 30, None]
+    assert all(item.prediction is None for item in history.observations)
 
 
 @pytest.mark.asyncio
-async def test_history_trends_are_as_of_day_end_or_now_and_storage_is_off_loop(
+async def test_history_storage_is_off_loop_without_trend_calculation(
     service: tuple[MatocaService, datetime], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import asyncio
@@ -173,21 +174,17 @@ async def test_history_trends_are_as_of_day_end_or_now_and_storage_is_off_loop(
     app, now = service
     for minute in range(5):
         save_observation(app, now - timedelta(minutes=4 - minute), minutes=30 - minute)
-    original = app._analytics.trend_summary
+    original = app._analytics.shop_history
 
     def checked(*args):
         with pytest.raises(RuntimeError, match="no running event loop"):
             asyncio.get_running_loop()
         return original(*args)
 
-    monkeypatch.setattr(app._analytics, "trend_summary", checked)
-    current = await app.shop_trend("sawayaka", 3272)
-    assert current.as_of == now
-    assert current.sample_count == 1
-    assert current.recent_change_minutes == -4
-    history = await app.shop_history("sawayaka", 3272, date(2026, 9, 14))
-    assert history.trend.as_of == datetime(2026, 9, 14, 14, 59, 59, 999999, tzinfo=UTC)
-    assert history.trend.sample_count == 0
+    monkeypatch.setattr(app._analytics, "shop_history", checked)
+    history = await app.shop_history("sawayaka", 3272, date(2026, 9, 15))
+    assert len(history.observations) == 5
+    assert history.trend is None
 
 
 @pytest.mark.asyncio

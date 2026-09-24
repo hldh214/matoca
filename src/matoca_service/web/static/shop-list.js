@@ -4,11 +4,13 @@ export function officialEstimate(minutes, isMore = false) {
 }
 
 export class ShopList {
-  constructor(document, onJoin, onFavorite) {
+  constructor(document, onJoin, onFavorite, onSchedule, onHistory) {
     this.document = document;
     this.target = document.querySelector("#shop-list");
     this.onJoin = onJoin;
     this.onFavorite = onFavorite;
+    this.onSchedule = onSchedule;
+    this.onHistory = onHistory;
   }
 
   node(tag, className, text) {
@@ -80,6 +82,15 @@ export class ShopList {
       tools.append(favorite);
       const actions = this.node("div", "shop-actions");
       actions.append(action);
+      const schedule = this.node("button", "schedule-button", "自動受付");
+      schedule.type = "button";
+      schedule.disabled = !queueKnown || hasQueue;
+      schedule.addEventListener("click", () => { if (!schedule.disabled) return this.onSchedule(shop); });
+      actions.append(schedule);
+      const history = this.node("button", "history-button", "履歴");
+      history.type = "button";
+      history.addEventListener("click", () => this.onHistory(shop));
+      actions.append(history);
       row.append(identity, status, waiting, estimate, tools, actions);
       this.target.append(row);
     }

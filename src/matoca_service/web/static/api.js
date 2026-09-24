@@ -45,6 +45,12 @@ export class MatocaApi {
   }
 
   console() { return this.request(`${this.base}/console`); }
+  shopHistory(id, day) { return this.request(`${this.base}/shops/${encodeURIComponent(id)}/history?day=${encodeURIComponent(day)}`); }
+  tasks() { return this.request("/api/automation"); }
+  createTask(body) { return this.request("/api/automation", "POST", {...body, merchant_key: decodeURIComponent(this.merchantKey)}); }
+  editTaskContext(id) { return this.request(`/api/automation/${encodeURIComponent(id)}/edit-context`); }
+  editTask(id, body) { return this.request(`/api/automation/${encodeURIComponent(id)}`, "PUT", body); }
+  stopTask(id) { return this.request(`/api/automation/${encodeURIComponent(id)}`, "DELETE"); }
   async currentWaiting() {
     const items = await this.request("/api/queues");
     return items;

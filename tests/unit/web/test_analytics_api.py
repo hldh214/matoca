@@ -15,6 +15,8 @@ class AnalyticsFake:
         return TrendTimeline([]).summary(shop_id, datetime(2026, 9, 14, tzinfo=UTC))
 
     async def shop_history(self, merchant_key: str, shop_id: int, day: date) -> ShopHistory:
+        if shop_id == 9999:
+            raise LookupError(shop_id)
         return ShopHistory(
             day=day, shop=ShopIdentity(id=shop_id, name=merchant_key), observations=[]
         )
@@ -36,8 +38,22 @@ async def test_analytics_routes_return_structured_history_and_favorites() -> Non
     ) as client:
         history = await client.get("/api/merchants/sawayaka/shops/3272/history?day=2026-09-10")
         favorites = await client.get("/api/favorites")
-    assert history.status_code == 404
+    assert history.status_code == 200
+    assert history.json()["day"] == "2026-09-10"
+    assert history.json()["observations"] == []
     assert favorites.json() == {"sawayaka": [3272]}
+
+
+@pytest.mark.asyncio
+async def test_history_unknown_shop_and_invalid_day() -> None:
+    app = create_app(object(), analytics_service=AnalyticsFake())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        missing = await client.get("/api/merchants/sawayaka/shops/9999/history?day=2026-09-10")
+        invalid = await client.get("/api/merchants/sawayaka/shops/3272/history?day=invalid")
+    assert missing.status_code == 404
+    assert invalid.status_code == 422
 
 
 @pytest.mark.asyncio

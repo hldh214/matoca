@@ -18,7 +18,16 @@ from pydantic import ValidationError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from matoca_service.analytics.models import FavoriteState, FavoriteUpdate, ShopHistory
+from matoca_service.automation.models import (
+    AutomationEditContext,
+    AutomationEditRequest,
+    AutomationRequest,
+    AutomationTask,
+    OfficialAutomationEditRequest,
+    OfficialAutomationRequest,
+)
 from matoca_service.automation.repository import TaskConflictError
+from matoca_service.automation.runner import form_revision
 from matoca_service.config import RuntimeSettings
 from matoca_service.console import MerchantConsoleData
 from matoca_service.matoca.models import Shop, Waiting
@@ -150,12 +159,23 @@ class ManualIntentService(Protocol):
     async def resolve_manual_intent(self, intent_id: str) -> None: ...
 
 
+class AutomationService(Protocol):
+    async def automation_tasks(self) -> list[AutomationTask]: ...
+    async def create_automation_task(self, request: AutomationRequest) -> AutomationTask: ...
+    async def automation_edit_context(self, task_id: str) -> AutomationEditContext: ...
+    async def edit_automation_task(
+        self, task_id: str, request: AutomationEditRequest
+    ) -> AutomationTask: ...
+    async def cancel_automation_task(self, task_id: str) -> AutomationTask: ...
+
+
 def create_app(
     service: DashboardService | None = None,
     *,
     collection_coordinator: CollectionLifecycle | None = None,
     analytics_service: AnalyticsService | None = None,
     notification_service: NotificationService | None = None,
+    automation_coordinator: CollectionLifecycle | None = None,
 ) -> FastAPI:
     dashboard_service: DashboardService
     coordinator: CollectionLifecycle | None
@@ -172,6 +192,12 @@ def create_app(
         coordinator = collection_coordinator
     analytics = analytics_service or cast(AnalyticsService, dashboard_service)
     manual_intents = cast(ManualIntentService, dashboard_service)
+    automation = cast(AutomationService, dashboard_service)
+    automatic = automation_coordinator or (
+        dashboard_service.automation_coordinator
+        if isinstance(dashboard_service, MatocaService)
+        else None
+    )
     notifications = notification_service or (
         dashboard_service.notifications if isinstance(dashboard_service, MatocaService) else None
     )
@@ -188,11 +214,15 @@ def create_app(
         )
         if tracking is not None:
             tracking.start()
+        if automatic is not None:
+            automatic.start()
         if notifications is not None:
             notifications.dispatcher.start()
         try:
             yield
         finally:
+            if automatic is not None:
+                await automatic.stop()
             if notifications is not None:
                 await notifications.dispatcher.stop()
             if tracking is not None:
@@ -379,7 +409,10 @@ def create_app(
         shop_id: int = PathParameter(ge=1),
         merchant: str = Query(default="sawayaka"),
     ) -> Shop:
-        return await dashboard_service.shop_detail(merchant, shop_id)
+        shop = await dashboard_service.shop_detail(merchant, shop_id)
+        return (
+            shop.model_copy(update={"form_revision": form_revision(shop)}) if shop.forms else shop
+        )
 
     @app.get("/api/waiting/{waiting_id}", response_model=Waiting)
     async def waiting_detail_api(
@@ -401,9 +434,60 @@ def create_app(
     async def queues_api() -> list[QueueSession | QueueIntentSummary]:
         return await dashboard_service.queues()
 
+    @app.get("/api/automation", response_model=list[AutomationTask])
+    async def automation_tasks_api() -> list[AutomationTask]:
+        return await automation.automation_tasks()
+
+    @app.post("/api/automation", response_model=AutomationTask, status_code=201)
+    async def create_automation_api(request: Request) -> AutomationTask:
+        require_same_origin(request)
+        try:
+            values = OfficialAutomationRequest.model_validate(await request.json())
+        except ValidationError, JSONDecodeError, UnicodeDecodeError:
+            raise HTTPException(422, "到着予定と人数・確認項目を確認してください") from None
+        return await automation.create_automation_task(values)
+
+    @app.get("/api/automation/{task_id}/edit-context", response_model=AutomationEditContext)
+    async def automation_edit_context_api(task_id: str) -> AutomationEditContext:
+        try:
+            return await automation.automation_edit_context(task_id)
+        except LookupError:
+            raise HTTPException(404, "自動受付が見つかりません") from None
+
+    @app.put("/api/automation/{task_id}", response_model=AutomationTask)
+    async def edit_automation_api(task_id: str, request: Request) -> AutomationTask:
+        require_same_origin(request)
+        try:
+            values = OfficialAutomationEditRequest.model_validate(await request.json())
+        except ValidationError, JSONDecodeError, UnicodeDecodeError:
+            raise HTTPException(422, "到着予定と人数・確認項目を確認してください") from None
+        try:
+            return await automation.edit_automation_task(task_id, values)
+        except LookupError:
+            raise HTTPException(404, "自動受付が見つかりません") from None
+
+    @app.delete("/api/automation/{task_id}", response_model=AutomationTask)
+    async def cancel_automation_api(task_id: str, request: Request) -> AutomationTask:
+        require_same_origin(request)
+        try:
+            return await automation.cancel_automation_task(task_id)
+        except LookupError:
+            raise HTTPException(404, "自動受付が見つかりません") from None
+
     @app.get("/api/favorites", response_model=dict[str, list[int]])
     async def favorites_api() -> dict[str, list[int]]:
         return await analytics.favorites()
+
+    @app.get("/api/merchants/{merchant_key}/shops/{shop_id}/history", response_model=ShopHistory)
+    async def shop_history_api(
+        merchant_key: str, day: date, shop_id: int = PathParameter(ge=1)
+    ) -> ShopHistory:
+        try:
+            return await analytics.shop_history(merchant_key, shop_id, day)
+        except UnknownMerchantError:
+            raise
+        except LookupError:
+            raise HTTPException(404, "店舗が見つかりません") from None
 
     @app.put("/api/merchants/{merchant_key}/shops/{shop_id}/favorite", response_model=FavoriteState)
     async def favorite_api(

@@ -22,6 +22,50 @@ class TimingDecision(BaseModel):
     would_submit: bool = False
 
 
+def evaluate_official_timing(
+    *,
+    evaluated_at: datetime,
+    checked_at: datetime,
+    arrival_at: datetime,
+    official_minutes: int | None,
+    official_is_more: bool,
+    available: bool = True,
+    observation_fresh: bool = True,
+) -> TimingDecision:
+    fresh = observation_fresh and timedelta() <= evaluated_at - checked_at <= timedelta(minutes=1)
+    if evaluated_at > arrival_at + timedelta(minutes=2):
+        code, reason = "expired", "到着予定から2分を過ぎたため、監視を終了しました"
+    elif not fresh:
+        code, reason = "stale", "最新情報を確認できないため、受付を保留しました"
+    elif not available:
+        code, reason = "unavailable", "受付状況が変更されました"
+    elif evaluated_at >= arrival_at:
+        code, reason = "arrival", "到着予定を迎え、受付条件を満たしました"
+    elif official_minutes is None or official_minutes < 0 or official_is_more:
+        code, reason = (
+            "estimate_unavailable",
+            "公式目安が不明または下限表示のため、次回の確認を待っています",
+        )
+    elif evaluated_at + timedelta(minutes=official_minutes) < arrival_at:
+        code, reason = "too_early", "公式目安に基づき、受付のタイミングを待っています"
+    else:
+        code, reason = "timing_ready", "公式目安が到着予定までの時間に達したため、受付します"
+    return TimingDecision(
+        evaluated_at=evaluated_at,
+        checked_at=checked_at,
+        fresh=fresh,
+        official_minutes=official_minutes,
+        official_is_more=official_is_more,
+        prediction=None,
+        arrival_at=arrival_at,
+        early_tolerance_minutes=0,
+        model_error_minutes=0,
+        reason_code=code,
+        reason=reason,
+        would_submit=code in {"arrival", "timing_ready"},
+    )
+
+
 def evaluate_timing(
     *,
     evaluated_at: datetime,

@@ -124,19 +124,115 @@ def request(arrival):
 
 
 @pytest.mark.asyncio
-async def test_no_pre_call_samples_waits_until_arrival_even_with_early_tolerance(setup):
+async def test_official_api_create_edit_stop_and_reject_legacy_controls(setup):
+    from matoca_service.web.app import create_app
+
+    service, _, client, _, now = setup
+    app = create_app(service)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://test"
+    ) as api:
+        body = {
+            "merchant_key": "sawayaka",
+            "shop_id": 3272,
+            "arrival_at": (now[0] + timedelta(hours=1)).isoformat(),
+            "consent": True,
+        }
+        detail = (await api.get("/api/shops/3272")).json()
+        body["form_revision"] = detail.get("form_revision", "missing")
+        assert (await api.post("/api/automation", json=body)).status_code == 403
+        headers = {"Origin": "https://test"}
+        old_max = client.shop.forms.max_adult
+        client.shop.forms.max_adult = old_max + 1
+        assert (await api.post("/api/automation", json=body, headers=headers)).status_code == 409
+        client.shop.forms.max_adult = old_max
+        for extra in (
+            {"model_error_minutes": 15},
+            {"mode": "simulation"},
+            {"timing_policy": "legacy"},
+        ):
+            assert (
+                await api.post("/api/automation", json=body | extra, headers=headers)
+            ).status_code == 422
+        response = await api.post("/api/automation", json=body, headers=headers)
+        assert response.status_code == 201
+        task = response.json()
+        assert task["timing_policy"] == "official"
+        context = (await api.get(f"/api/automation/{task['id']}/edit-context")).json()
+        edit = {
+            "arrival_at": (now[0] + timedelta(hours=2)).isoformat(),
+            "consent": True,
+            "expected_version": task["version"],
+            "form_revision": context["form_revision"],
+        }
+        assert (
+            await api.put(f"/api/automation/{task['id']}", json=edit, headers=headers)
+        ).status_code == 200
+        assert (
+            await api.put(f"/api/automation/{task['id']}", json=edit, headers=headers)
+        ).status_code == 409
+        response = await api.delete(f"/api/automation/{task['id']}", headers=headers)
+        assert response.json()["state"] == "cancelled"
+        assert (await api.get("/api/automation")).json()[0]["state"] == "cancelled"
+        assert (await api.get("/api/automation/missing/edit-context")).status_code == 404
+    assert client.posts == 0
+
+
+@pytest.mark.asyncio
+async def test_official_timing_needs_no_samples_or_prediction(setup, monkeypatch):
     service, runner, client, _, now = setup
     service._database.write(lambda c: c.execute("DELETE FROM queue_milestones"))
-    arrival = now[0] + timedelta(minutes=10)
-    task = await runner.create(request(arrival).model_copy(update={"early_tolerance_minutes": 120}))
+
+    async def forbidden(*args):
+        raise AssertionError("prediction must not run")
+
+    monkeypatch.setattr(service, "predict_pre_call", forbidden)
+    arrival = now[0] + timedelta(minutes=31)
+    task = await runner.create(request(arrival))
     await runner.run_once()
     assert service._automation.get(task.id).state == "monitoring"
-    assert service._automation.list_decisions(task.id)[-1].reason_code == "pre_call_samples_missing"
+    assert service._automation.list_decisions(task.id)[-1].reason_code == "too_early"
     assert client.posts == 0
-    now[0] = arrival
+    now[0] += timedelta(minutes=1)
     await runner.run_once()
     assert service._automation.get(task.id).state == "queued"
     assert client.posts == 1
+
+
+@pytest.mark.asyncio
+async def test_restart_runs_only_explicit_official_tasks(setup):
+    service, runner, client, _, now = setup
+    old = await runner.create(request(now[0] + timedelta(minutes=30)))
+    service._database.write(
+        lambda c: c.execute(
+            "UPDATE automation_tasks SET payload=json_remove(payload, '$.timing_policy') "
+            "WHERE id=?",
+            (old.id,),
+        )
+    )
+    restarted = AutomationRunner(service, service._automation, now=lambda: now[0])
+    await restarted.run_once()
+    assert client.posts == 0
+    assert service._automation.get(old.id).state == "scheduled"
+    new = await runner.create(request(now[0] + timedelta(minutes=30)))
+    await restarted.run_once()
+    assert client.posts == 1
+    assert service._automation.get(new.id).state == "queued"
+    assert service._automation.get(old.id).state == "scheduled"
+
+
+@pytest.mark.asyncio
+async def test_unsent_attention_expires_after_arrival_grace(setup):
+    service, runner, client, other, now = setup
+    arrival = now[0] + timedelta(minutes=10)
+    task = await runner.create(request(arrival))
+    other.waiting = [Waiting(id=123, shop_id=1)]
+    await runner.run_once()
+    assert service._automation.get(task.id).state == "needs_attention"
+    now[0] = arrival + timedelta(minutes=3)
+    await runner.run_once()
+    assert service._automation.get(task.id).state == "expired"
+    assert client.posts == 0
 
 
 @pytest.mark.asyncio
@@ -769,17 +865,17 @@ async def test_post_response_persistence_failure_recovers_linkage_without_replay
 
 
 @pytest.mark.asyncio
-async def test_prediction_delay_crossing_deadline_does_not_send(setup, monkeypatch):
+async def test_shop_read_delay_crossing_deadline_does_not_send(setup, monkeypatch):
     service, runner, client, _, now = setup
     task = await runner.create(request(now[0] + timedelta(minutes=10)))
-    original = service.predict_pre_call
+    original = client.get_shop
 
-    async def delayed(*args):
-        result = await original(*args)
+    async def delayed(*args, **kwargs):
+        result = await original(*args, **kwargs)
         now[0] += timedelta(hours=1)
         return result
 
-    monkeypatch.setattr(service, "predict_pre_call", delayed)
+    monkeypatch.setattr(client, "get_shop", delayed)
     await runner.run_once()
     assert service._automation.get(task.id).state == "expired"
     assert client.posts == 0
@@ -803,17 +899,17 @@ async def test_persistence_delay_cannot_authorize_hours_late_post(setup, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_slow_prediction_does_not_send_using_stale_live_checks(setup, monkeypatch):
+async def test_slow_shop_read_does_not_send_using_stale_live_checks(setup, monkeypatch):
     service, runner, client, _, now = setup
     task = await runner.create(request(now[0] + timedelta(minutes=10)))
-    original = service.predict_pre_call
+    original = client.get_shop
 
-    async def delayed(*args):
-        result = await original(*args)
+    async def delayed(*args, **kwargs):
+        result = await original(*args, **kwargs)
         now[0] += timedelta(minutes=2)
         return result
 
-    monkeypatch.setattr(service, "predict_pre_call", delayed)
+    monkeypatch.setattr(client, "get_shop", delayed)
     await runner.run_once()
     assert service._automation.get(task.id).state == "monitoring"
     assert client.posts == 0

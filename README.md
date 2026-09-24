@@ -1,7 +1,7 @@
 # Matoca Service
 
 A single-user Japanese queue console with cached shops, favorites, immediate
-queue reception, current queue tracking and optional browser Web Push.
+queue reception, official-estimate automatic reception, current queue tracking and optional browser Web Push.
 Runs as one Python process and one Uvicorn worker behind a trusted access-control
 proxy, such as Cloudflare Zero Trust. There is no application login.
 
@@ -9,8 +9,8 @@ proxy, such as Cloudflare Zero Trust. There is no application login.
 
 | Merchant | Status | Capabilities |
 | --- | --- | --- |
-| 炭焼きレストラン さわやか | Supported | Availability, estimates, manual queue/cancellation, tracking |
-| ラ・オハナ 横浜本牧 | Supported | Availability, estimates, manual queue/cancellation, tracking |
+| 炭焼きレストラン さわやか | Supported | Availability, official estimates, manual/automatic reception, cancellation, tracking |
+| ラ・オハナ 横浜本牧 | Supported | Availability, official estimates, manual/automatic reception, cancellation, tracking |
 
 The tracked `src/matoca_service/merchant_registry.toml` defines the supported
 merchants. Adding a merchant requires capture-backed authentication and queue
@@ -82,8 +82,8 @@ time or groups, and pin favorites. Current queues appear above the shop list.
 
 The header settings default to two adults and zero children. Opening reception
 loads the shop's live form, applies its limits and defaults confirmation fields.
-Joining uses the shop coordinates. Reception and cancellation are explicit actions;
-no arrival-time scheduling, custom prediction or automatic submission runs.
+Joining uses the shop coordinates. Immediate reception and cancellation are explicit
+actions; automatic reception requires creating a schedule through `自動受付`.
 Uncertain submission results are reconciled without blindly repeating a request.
 
 The queue panel shows the ticket number, groups ahead, latest official waiting
@@ -98,6 +98,30 @@ list and the latest tracked queue. Failed reads preserve the last ticket and off
 retry. Favorites have their own filter, and each browser remembers search, sorting
 and filtering separately for each merchant. Reception/cancellation results and
 favorite-save failures are shown explicitly in Japanese.
+
+## Official-estimate automatic reception
+
+Choose `自動受付` next to a shop, enter the intended arrival date/time and party
+details, then select `自動受付を開始`. Times use the browser timezone, with Tokyo as
+the fallback. New schedules default to the dialog opening time plus the shop's live
+official wait (one hour when unavailable); editing preserves the saved arrival time.
+Store-specific questions and limits use the same live form as manual
+reception. Scheduling is also available before reception opens via the `すべて` filter.
+
+The server checks every minute and submits when **now + official waiting minutes
+≥ arrival time**, provided the shop accepts reception and the account has no other
+queue or unresolved submission. No learned model, historical samples, early margin
+or prediction-error setting is used. Official times are estimates, not guaranteed
+call times; the actual call may be earlier.
+
+Before arrival, missing, stale or lower-bound (`以上`) estimates keep the task waiting.
+From arrival through two minutes afterward, live reception checks may permit joining
+even without an exact estimate. After this grace period the unsent task expires.
+The panel shows the latest decision, last checked official estimate and next check.
+You can edit unsent tasks or stop monitoring; stopping does not cancel an issued ticket.
+Closed browser tabs do not stop monitoring, and new official-mode tasks survive
+service restarts. Historical prediction tasks remain inactive and are never revived.
+Ambiguous submission results are reconciled without automatically resending.
 
 ## Browser notifications
 
@@ -142,9 +166,18 @@ existing parent-directory permissions are never changed. Authentication remains 
 
 Shop identity is cached and refreshed daily in Tokyo time. Current availability,
 groups and official estimates refresh in the background and on manual refresh.
-Current shop snapshots are overwritten instead of accumulating prediction history.
-Existing historical data is preserved, but prediction-driven collection, analysis
-and arrival tasks are no longer run. Complete catalogs replace membership;
+Each collection updates current shop snapshots and appends minute observations for
+the history charts. Select `履歴` on a shop to view waiting groups and official
+waiting minutes by Japanese calendar date (default: today). Axis times use the
+browser timezone, falling back to Tokyo. Missing readings and gaps longer than two
+minutes break the line; lower-bound estimates are marked. Refresh reloads stored
+data without submitting a queue. Historical recording was paused while the history
+UI was retired; those missing intervals cannot be reconstructed from current snapshots.
+Raw minute observations are retained for 180 days; older data is retained as
+five-minute aggregates, which are not currently displayed in this daily chart.
+Historical charts do not calculate predictions or replay automatic reception.
+Official-estimate tasks use fresh shop details independently.
+Complete catalogs replace membership;
 partial/error reads retain known data with stale status. Queue tracking remains
 active independently of shop snapshots. Storage runs off the event loop.
 Real state, captures, `.env`, `line_client.toml` and `data/` are never committed.

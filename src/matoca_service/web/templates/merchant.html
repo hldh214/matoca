@@ -30,6 +30,12 @@
         </div>
         <div id="current-queue" class="queue-content" aria-live="polite">順番待ちを確認中です</div>
       </section>
+      <section class="automation-panel" aria-labelledby="automation-title">
+        <h2 id="automation-title">自動受付の予定</h2>
+        <p class="automation-help">到着予定に合わせて、公式目安を毎分確認して受付します。</p>
+        <div id="automation-tasks" aria-live="polite">予定を確認しています</div>
+        <p id="automation-error" role="status"></p>
+      </section>
       <section class="shop-console" aria-label="店舗一覧">
         <div class="toolbar">
           <div class="segmented" id="shop-filter" role="group" aria-label="店舗の絞り込み">
@@ -66,6 +72,13 @@
         <p class="dialog-kicker">順番待ち</p>
         <h2 id="join-shop-name"></h2>
         <p id="join-status" class="dialog-status"></p>
+        <div id="arrival-settings" class="arrival-settings" hidden>
+          <div class="arrival-heading"><label for="arrival-at">到着予定</label><div class="arrival-adjustments"><button id="arrival-subtract-ten" class="schedule-button" type="button">−10分</button><button id="arrival-add-ten" class="schedule-button" type="button">＋10分</button></div></div>
+          <input id="arrival-at" type="datetime-local">
+          <p id="arrival-timezone"></p>
+          <p>現在時刻＋公式の待ち時間が到着予定に達すると、自動で申し込みます。画面を閉じても監視は続きます。</p>
+          <p>公式目安と実際の呼出時刻は異なる場合があります。目安が不明・「以上」の間は待機し、到着予定から2分を過ぎると監視を終了します。</p>
+        </div>
         <div class="counter-row"><span>大人</span><div class="stepper"><button type="button" data-step="adult" data-delta="-1" aria-label="大人を減らす">−</button><output id="adult-count">2</output><button type="button" data-step="adult" data-delta="1" aria-label="大人を増やす">＋</button></div></div>
         <div class="counter-row"><span>子ども</span><div class="stepper"><button type="button" data-step="child" data-delta="-1" aria-label="子どもを減らす">−</button><output id="child-count">0</output><button type="button" data-step="child" data-delta="1" aria-label="子どもを増やす">＋</button></div></div>
         <div id="confirm-items" class="confirm-items"></div>
@@ -86,5 +99,16 @@
       </form>
     </dialog>
     {% include 'push-dialog.html' %}
+    <dialog id="history-dialog" class="queue-dialog history-dialog" aria-labelledby="history-title">
+      <div class="history-content">
+        <button class="dialog-close" type="button" aria-label="閉じる">×</button>
+        <h2 id="history-title">店舗の履歴</h2>
+        <div class="history-controls">
+          <label>日付（日本時間）<input id="history-day" type="date"></label>
+          <button id="history-refresh" class="schedule-button" type="button">更新</button>
+        </div>
+        <div id="history-body" aria-live="polite"></div>
+      </div>
+    </dialog>
   </body>
 </html>

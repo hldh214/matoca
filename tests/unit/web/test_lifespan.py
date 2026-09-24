@@ -29,3 +29,12 @@ async def test_lifespan_starts_and_stops_collection_coordinator() -> None:
         assert coordinator.started is True
 
     assert coordinator.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_lifespan_starts_and_stops_automation_coordinator() -> None:
+    coordinator = RecordingCoordinator()
+    app = create_app(cast(DashboardService, object()), automation_coordinator=coordinator)
+    async with app.router.lifespan_context(app):
+        assert coordinator.started
+    assert coordinator.stopped

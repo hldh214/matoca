@@ -464,14 +464,16 @@ class BrowserFakeService:
                             effective_samples=2.0,
                             level="shop",
                         )
-                        if minutes is not None and error is None
+                        if minutes is not None and minutes >= 0 and error is None
                         else None
                     ),
                 )
                 for minute, waiting, minutes, error in [
                     (0, 2, 10, None),
+                    (1, 3, 15, None),
                     (5, 4, 20, None),
                     (10, 5, None, "timeout"),
+                    (14, 7, -1, None),
                     (15, 8, 35, None),
                 ]
             ]
